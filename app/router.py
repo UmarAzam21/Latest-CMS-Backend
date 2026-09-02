@@ -73,7 +73,17 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-ENV_FILE = BASE_DIR / ".env"
+ENV_CANDIDATES = [
+    BASE_DIR / ".env",
+    BASE_DIR.parent / ".env",
+]
+
+
+def _find_env_file() -> Path | None:
+    for candidate in ENV_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 FIELD_MAP = {
@@ -102,7 +112,9 @@ def _load_env_file(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
-_load_env_file(ENV_FILE)
+ENV_FILE = _find_env_file()
+if ENV_FILE is not None:
+    _load_env_file(ENV_FILE)
 
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),

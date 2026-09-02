@@ -4,12 +4,14 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from sqlalchemy import inspect
 
 from .db import engine, Base, get_db
 from . import models
 from .router import router
 from .support_system.router import router as support_router
+from .auth import hash_password
 
 from app.xlsx_import.router import router as xlsx_import_router
 from app.xlsx_import.control import init_control_tables
@@ -50,6 +52,31 @@ def ensure_admin_profile_columns():
         logging.getLogger(__name__).warning("Could not ensure admin_users profile columns: %s", exc)
 
 
+def ensure_default_superadmin():
+    """Create a usable default superadmin if the database is empty."""
+    db = next(get_db())
+    try:
+        from .models import AdminUser
+
+        has_superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first() is not None
+        if not has_superadmin:
+            email = os.getenv("DEFAULT_SUPERADMIN_EMAIL", "admin@example.com")
+            password = os.getenv("DEFAULT_SUPERADMIN_PASSWORD", "admin123")
+            name = os.getenv("DEFAULT_SUPERADMIN_NAME", "System Admin")
+
+            admin = AdminUser(
+                name=name,
+                email=email,
+                password_hash=hash_password(password),
+                role="superadmin",
+            )
+            db.add(admin)
+            db.commit()
+            logging.getLogger(__name__).info("Created default superadmin with email %s", email)
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------
@@ -73,6 +100,9 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Ensure there is a usable default superadmin for fresh installs.
+    ensure_default_superadmin()
+
     # Initialize XLSX import control tables
     init_control_tables()
 
@@ -89,6 +119,30 @@ app = FastAPI(
     title="CMS Backend API",
     lifespan=lifespan
 )
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    openapi_schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    openapi_schema["components"]["securitySchemes"]["HTTPBearer"] = {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    openapi_schema["security"] = [{"HTTPBearer": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 # ---------------------------------------------------------

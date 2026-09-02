@@ -1,3 +1,6 @@
+import json
+import os
+
 import bcrypt
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -9,8 +12,8 @@ from .db import get_db
 from .models import AdminUser, Role
 from .enums import ModuleAccess
 
-SECRET_KEY = "your-secret-key-change-this"
-ALGORITHM = "HS256"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this")
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 din
 
 security = HTTPBearer(auto_error=False)
@@ -30,6 +33,46 @@ def create_access_token(data: dict):
 
 def decode_access_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+
+def _normalize_modules(modules):
+    """Normalize module permissions from DB JSON, dict, or string values."""
+    if modules is None:
+        return []
+    if isinstance(modules, str):
+        if not modules.strip():
+            return []
+        try:
+            modules = json.loads(modules)
+        except (TypeError, ValueError):
+            return [modules]
+    if isinstance(modules, dict):
+        return [modules]
+    if not isinstance(modules, list):
+        return [modules]
+    return modules
+
+
+def _normalize_role_name(role_value: str | None) -> str:
+    """Normalize legacy role names used in older database records."""
+    raw = str(role_value or "admin").strip().lower().replace(" ", "_")
+    aliases = {
+        "super_admin": "superadmin",
+        "super-admin": "superadmin",
+        "superadmin": "superadmin",
+        "admin": "admin",
+    }
+    return aliases.get(raw, raw)
+
+
+def _role_modules_from_db(user_role: str, role_record: Role | None):
+    """Return a module permission list for a user role, with safe fallback for admin/superadmin."""
+    normalized_role = _normalize_role_name(user_role)
+    if normalized_role in {"superadmin", "admin"}:
+        return ["*"]
+    if role_record is None:
+        return []
+    return _normalize_modules(role_record.modules)
 
 
 def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
@@ -66,15 +109,14 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    role_name = user.role or "admin"
+    role_name = _normalize_role_name(user.role)
     is_superadmin = role_name == "superadmin"
     role = db.query(Role).filter(Role.name == role_name).first()
-
-    # Super admin has full access, otherwise get modules from role
-    if is_superadmin:
-        modules = ["*"]
-    else:
-        modules = role.modules if role is not None else ()
+    if role is None and user.role is not None:
+        legacy_alias = _normalize_role_name(user.role)
+        if legacy_alias == "superadmin":
+            role = db.query(Role).filter(Role.name == "superadmin").first()
+    modules = _role_modules_from_db(role_name, role)
 
     return {
         "id": user.id,
@@ -88,9 +130,17 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
 
 def require_module(module_name: str):
     def dependency(current_admin: dict = Depends(get_current_admin)):
-        modules = current_admin.get("modules", [])
-        if "*" in modules or module_name in modules:
+        modules = _normalize_modules(current_admin.get("modules", []))
+        if "*" in modules:
             return current_admin
+
+        for module in modules:
+            if isinstance(module, dict):
+                if module_name in module:
+                    return current_admin
+            elif module == module_name:
+                return current_admin
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied.",
@@ -107,7 +157,7 @@ def require_module_access(module_name: str, access_level: ModuleAccess):
         access_level: The required access level (READ, UPDATE, or ALL)
     """
     def dependency(current_admin: dict = Depends(get_current_admin)):
-        modules = current_admin.get("modules", [])
+        modules = _normalize_modules(current_admin.get("modules", []))
 
         # Admin users with "*" have full access
         if "*" in modules:
@@ -118,7 +168,7 @@ def require_module_access(module_name: str, access_level: ModuleAccess):
             if isinstance(module, dict):
                 # New format: {"module_name": "access_level"}
                 if module_name in module:
-                    user_access = module[module_name].lower()
+                    user_access = str(module[module_name]).lower()
                     required_access = access_level.value.lower()
 
                     # ALL access covers everything, UPDATE covers READ and UPDATE, READ is READ only

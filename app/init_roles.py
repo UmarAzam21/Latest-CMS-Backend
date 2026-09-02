@@ -27,7 +27,14 @@ def init_builtin_roles(db: Session) -> None:
     ]
     
     builtin_roles = []
-    
+
+    # Default admin role grants all module access.
+    builtin_roles.append({
+        "name": "admin",
+        "label": "Admin",
+        "modules": [{module: "update" for module in modules}],
+    })
+
     for module in modules:
         # Viewer role - read access only
         builtin_roles.append({
@@ -35,14 +42,14 @@ def init_builtin_roles(db: Session) -> None:
             "label": f"{module.replace('_', ' ').title()} Viewer",
             "modules": [{module: "read"}],
         })
-        
+
         # Editor role - update access (which includes read)
         builtin_roles.append({
             "name": f"{module}_editor",
             "label": f"{module.replace('_', ' ').title()} Editor",
             "modules": [{module: "update"}],
         })
-    
+
     # Add global roles
     builtin_roles.extend([
         {

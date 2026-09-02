@@ -1,5 +1,19 @@
-from app.router import resolve_notification_user_id, upload_profile_image_to_cloudinary, build_admin_dashboard_summary
+from app.router import resolve_notification_user_id, upload_profile_image_to_cloudinary, build_admin_dashboard_summary, _find_env_file
 from app.schema import AdminProfileUpdate
+from app.auth import _normalize_role_name
+
+
+def test_find_env_file_uses_project_root_dotenv():
+    env_file = _find_env_file()
+    assert env_file is not None
+    assert env_file.name == ".env"
+    assert env_file.parent.name in {"Custom-CMS-Backend", "backend"}
+
+
+def test_normalize_role_name_accepts_legacy_super_admin_alias():
+    assert _normalize_role_name("super_admin") == "superadmin"
+    assert _normalize_role_name("superadmin") == "superadmin"
+    assert _normalize_role_name("admin") == "admin"
 
 
 def test_resolve_notification_user_id_prefers_admin_email():
