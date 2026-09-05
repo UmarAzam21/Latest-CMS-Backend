@@ -14,6 +14,7 @@ from app.support_system import crud
 from app.support_system.config import settings
 from app.support_system.email_utils import send_email
 from app.support_system.imap_worker import process_mailbox
+from app.router import notify_admin_event
 
 router = APIRouter()
 templates = None
@@ -54,7 +55,7 @@ def require_admin() -> str:
 
 
 @router.post("/contact", response_model=ContactFormOut)
-def submit_contact_form(payload: ContactFormIn, db: Session = Depends(get_db)):
+async def submit_contact_form(payload: ContactFormIn, db: Session = Depends(get_db)):
     customer = crud.get_or_create_customer(db, email=payload.email, name=payload.name, phone=payload.phone)
     ticket = crud.create_ticket_with_message(
         db, customer=customer, subject=payload.subject, body=payload.message
@@ -75,6 +76,17 @@ def submit_contact_form(payload: ContactFormIn, db: Session = Depends(get_db)):
         )
     except Exception:
         pass
+
+    await notify_admin_event(
+        None,
+        db,
+        "support_ticket",
+        str(ticket.id),
+        "New support message received",
+        f"New support message from {customer.name or customer.email}.",
+        "created",
+        {"ticket_id": ticket.id, "email": customer.email},
+    )
 
     return ContactFormOut(ticket_id=ticket.id, status=ticket.status.value)
 
@@ -126,18 +138,21 @@ def admin_reply(
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    send_email(
-        to_address=ticket.customer.email,
-        subject=f"Re: [Ticket #{ticket.id}] {ticket.subject}",
-        body=body,
-        reply_to=ticket.reply_to_address,
-    )
+    try:
+        send_email(
+            to_address=ticket.customer.email,
+            subject=f"Re: [Ticket #{ticket.id}] {ticket.subject}",
+            body=body,
+            reply_to=ticket.reply_to_address,
+        )
+    except Exception:
+        pass
 
     crud.add_message(
         db,
         ticket=ticket,
         direction=models.MessageDirection.OUTBOUND,
-        sender_email=settings.SMTP_USER,
+        sender_email=settings.SMTP_USER or current_admin.get("email", "admin"),
         body=body,
         current_admin=current_admin,
     )

@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AdminUser, Role
+from .models import AdminUser, Role, User
 from .enums import ModuleAccess
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this")
@@ -30,6 +30,33 @@ def create_access_token(data: dict):
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def authenticate_account(identifier: str, password: str, db: Session) -> tuple[str, str, str]:
+    """Authenticate either an admin email or a registered user email/phone."""
+    admin = db.query(AdminUser).filter(AdminUser.email == identifier).first()
+    if admin and verify_password(password, admin.password_hash):
+        return (
+            create_access_token(data={"sub": admin.email, "role": admin.role, "slug": "admin"}),
+            "admin",
+            "/admin-dashboard",
+        )
+
+    user = db.query(User).filter(
+        (User.email == identifier) | (User.phone == identifier)
+    ).first()
+    if user and verify_password(password, user.password_hash):
+        return (
+            create_access_token(data={"sub": str(user.id), "slug": "user"}),
+            "user",
+            "/user-dashboard",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 def decode_access_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])

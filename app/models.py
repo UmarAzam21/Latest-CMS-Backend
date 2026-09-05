@@ -221,8 +221,24 @@ class Lead(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(255), nullable=False)
-    email = Column(String(320), nullable=False)
+    email = Column(String(320), nullable=True)
     phone = Column(String(20), nullable=False)
-    service_type = Column(SAEnum(ServiceType), nullable=False)
+    service_type = Column(
+        SAEnum(ServiceType, values_callable=lambda enum_cls: [e.value for e in enum_cls]),
+        nullable=True,
+    )
     city = Column(String(100), nullable=False)
+    cnic = Column(String, nullable=True)
+    status = Column(String, nullable=True, default="partial")
+    created_at = Column(DateTime(timezone=False), default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(255), nullable=False, unique=True)
+    email = Column(String(320), nullable=True, unique=True)
+    phone = Column(String(20), nullable=True, unique=True)
+    password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=False), default=utcnow)

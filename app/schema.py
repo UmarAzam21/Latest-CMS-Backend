@@ -1,11 +1,9 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field,field_validator
 from typing import Optional, Any, Union
 from datetime import datetime
+import uuid
 from .enums import ServiceType
 from typing import Literal
-
-
-
 
 
 # ---------- Admin User ----------
@@ -261,16 +259,21 @@ class XlsxImportResponse(BaseModel):
     
     
 # app/schema.py
+
 class LeadsResponse(BaseModel):
     id: int
     username: str
-    email: EmailStr
     phone: str
-    service_type: ServiceType
-    created_at: datetime
     city: str
-
-    model_config = ConfigDict(from_attributes=True)
+    email: Optional[EmailStr] = None
+    service_type: Optional[ServiceType] = None
+    cnic: Optional[str] = None
+    status: Optional[str] = None
+    created_at: datetime
+ 
+    class Config:
+        from_attributes = True
+ 
     
 class LeadExportRequest(BaseModel):
     format: Literal["csv", "excel", "pdf"] = "csv"
@@ -279,5 +282,52 @@ class LeadExportRequest(BaseModel):
     service_type: ServiceType | None = None
     fields: list[str] | None = None  # if None, export all fields
     
-    
-    
+class LeadStep1Create(BaseModel):
+    """Step 1 of the form: name, phone, city."""
+    username: str
+    phone: str
+    city: str
+ 
+ 
+class LeadStep2Update(BaseModel):
+    """Step 2 of the form: cnic, service, email — all optional so PATCH stays flexible."""
+    cnic: Optional[str] = None
+    service_type: Optional[ServiceType] = None
+    email: Optional[EmailStr] = None
+
+
+
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    phone: str
+ 
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit")
+        return v
+ 
+ 
+class UserOut(BaseModel):
+    id: int
+    email: EmailStr
+    username: str
+    phone: str
+    created_at: datetime
+    slug: str = "user"
+ 
+    class Config:
+        from_attributes = True
+ 
+ 
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    slug: str = "user"
+    redirect_to: str = "/user-dashboard"
+ 

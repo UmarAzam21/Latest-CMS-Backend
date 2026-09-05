@@ -16,6 +16,8 @@ from .auth import hash_password
 from app.xlsx_import.router import router as xlsx_import_router
 from app.xlsx_import.control import init_control_tables
 from app.init_roles import init_builtin_roles
+from .leads.router import router as lead_router
+from .user_account.router import router as user_account_router
 
 
 # ---------------------------------------------------------
@@ -29,7 +31,6 @@ logging.basicConfig(
 
 
 def ensure_admin_profile_columns():
-    """Backfill missing admin profile columns for legacy databases created before the fields existed."""
     try:
         inspector = inspect(engine)
         columns = [col["name"] for col in inspector.get_columns("admin_users")]
@@ -181,6 +182,9 @@ app.include_router(
     xlsx_import_router,
     prefix="/api"
 )
+
+app.include_router(lead_router)
+app.include_router(user_account_router)
 
 
 # ---------------------------------------------------------

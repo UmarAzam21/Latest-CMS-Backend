@@ -63,7 +63,7 @@ from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 
 
-from .auth import hash_password, verify_password, create_access_token, get_current_admin, require_module, require_super_admin
+from .auth import authenticate_account, hash_password, verify_password, create_access_token, get_current_admin, require_module, require_super_admin
 from .init_roles import init_builtin_roles, get_builtin_role_names
 
 import os
@@ -422,6 +422,19 @@ async def notify(user_id: str, resource_type: str, title: str, resource_id: Opti
                 pass
 
 
+async def notify_admin_event(current_admin: Optional[dict], db: Session, resource_type: str, resource_id: Optional[str], title: str, message: str, type_: str = "updated", data: Optional[dict] = None) -> None:
+    await notify(
+        user_id=resolve_notification_user_id(current_admin, db=db),
+        resource_type=resource_type,
+        resource_id=resource_id,
+        type_=type_,
+        title=title,
+        message=message,
+        data=data,
+        db=db,
+    )
+
+
 @router.get("/api/notifications", response_model=NotificationListResponse)
 def list_notifications(user_id: str = Query(...), unread_only: bool = Query(False), resource_type: Optional[str] = Query(None), page: int = Query(1), page_size: int = Query(25), db: Session = Depends(get_db)):
     q = db.query(Notification).filter(Notification.user_id == user_id)
@@ -512,7 +525,7 @@ def reset_all_admin_users(db: Session = Depends(get_db)):
 
 
 @router.post("/api/admin/create-user", response_model=AdminUserResponse)
-def create_superadmin(user: AdminUserCreate, db: Session = Depends(get_db)):
+def create_superadmin(user: AdminUserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     # Check if a superadmin already exists
     existing_superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first()
     if existing_superadmin:
@@ -530,11 +543,24 @@ def create_superadmin(user: AdminUserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        {"email": new_user.email},
+        db,
+        "admin_user",
+        str(new_user.id),
+        "Super admin created",
+        f"Super admin '{new_user.name}' was created.",
+        "created",
+        {"user_id": new_user.id, "email": new_user.email},
+    )
+
     return new_user
 
 
 @router.post("/api/admin/users", response_model=AdminUserResponse)
-def create_admin_user(user: AdminUserCreate, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def create_admin_user(user: AdminUserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Create a new admin user. Only super admin can create users."""
     existing = db.query(AdminUser).filter(AdminUser.email == user.email).first()
     if existing:
@@ -549,6 +575,19 @@ def create_admin_user(user: AdminUserCreate, db: Session = Depends(get_db), curr
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "admin_user",
+        str(new_user.id),
+        f"Admin user '{new_user.name}' created",
+        f"New admin '{new_user.email}' was created with role '{new_user.role}'.",
+        "created",
+        {"user_id": new_user.id, "email": new_user.email, "role": new_user.role},
+    )
+
     return new_user
 
 @router.get("/api/admin/users", response_model=list[AdminUserResponse])
@@ -558,7 +597,7 @@ def list_admin_users(db: Session = Depends(get_db), current_admin: dict = Depend
 
 
 @router.put("/api/admin/users/{user_id}", response_model=AdminUserResponse)
-def update_admin_user(user_id: int, user: AdminUserCreate, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def update_admin_user(user_id: int, user: AdminUserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Update an admin user's name, email, and password. Only super admin can update users."""
     existing = db.query(AdminUser).filter(AdminUser.id == user_id).first()
     if not existing:
@@ -571,10 +610,23 @@ def update_admin_user(user_id: int, user: AdminUserCreate, db: Session = Depends
 
     db.commit()
     db.refresh(existing)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "admin_user",
+        str(existing.id),
+        f"Admin user '{existing.name}' updated",
+        f"The admin account for '{existing.email}' was updated.",
+        "updated",
+        {"user_id": existing.id, "email": existing.email},
+    )
+
     return existing
 
 @router.post("/api/admin/users/{user_id}/assign-role", response_model=AdminUserWithRoleResponse)
-def assign_role_to_user(user_id: int, request: AssignRoleRequest, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def assign_role_to_user(user_id: int, request: AssignRoleRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Assign a role to a user. Only super admin can assign roles."""
     # Verify the role exists
     role = db.query(Role).filter(Role.name == request.role).first()
@@ -593,15 +645,29 @@ def assign_role_to_user(user_id: int, request: AssignRoleRequest, db: Session = 
     user.role = request.role
     db.commit()
     db.refresh(user)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "admin_user",
+        str(user.id),
+        f"Role assigned to '{user.name}'",
+        f"User '{user.email}' was assigned the '{request.role}' role.",
+        "updated",
+        {"user_id": user.id, "role": request.role},
+    )
+
     return user
 @router.post("/api/admin/login", response_model=Token)
 def login(credentials: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(AdminUser).filter(AdminUser.email == credentials.email).first()
-    if not user or not verify_password(credentials.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    token = create_access_token(data={"sub": user.email, "role": user.role})
-    return {"access_token": token, "token_type": "bearer"}
+    token, slug, redirect_to = authenticate_account(credentials.email, credentials.password, db)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "slug": slug,
+        "redirect_to": redirect_to,
+    }
 
 
         #   Protected Route
@@ -705,12 +771,25 @@ async def upload_profile_image(
     user.profile_image = profile_image_url
     db.commit()
     db.refresh(user)
+
+    await notify_admin_event(
+        current_admin,
+        db,
+        "admin_user",
+        str(user.id),
+        "Profile image updated",
+        f"Profile image for '{user.name}' was updated.",
+        "updated",
+        {"user_id": user.id, "profile_image": profile_image_url},
+    )
+
     return {"profile_image": user.profile_image}
 
 
 @router.patch("/api/admin/profile", response_model=AdminUserResponse)
 def update_own_profile(
     payload: AdminProfileUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_admin: dict = Depends(get_current_admin),
 ):
@@ -743,11 +822,24 @@ def update_own_profile(
 
     db.commit()
     db.refresh(user)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "admin_user",
+        str(user.id),
+        "Profile updated",
+        f"The profile for '{user.name}' was updated.",
+        "updated",
+        {"user_id": user.id, "email": user.email},
+    )
+
     return user
 
 
 @router.post("/api/admin/roles", response_model=RoleResponse)
-def create_role(role: RoleCreate, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def create_role(role: RoleCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Create a new role with module access levels. Only super admin can create roles."""
     existing = db.query(Role).filter(Role.name == role.name).first()
     if existing:
@@ -757,6 +849,19 @@ def create_role(role: RoleCreate, db: Session = Depends(get_db), current_admin: 
     db.add(new_role)
     db.commit()
     db.refresh(new_role)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "role",
+        new_role.name,
+        f"Role '{new_role.name}' created",
+        f"The role '{new_role.label}' was created.",
+        "created",
+        {"role": new_role.name, "label": new_role.label},
+    )
+
     return new_role
 
 
@@ -776,7 +881,7 @@ def get_role(role_name: str, db: Session = Depends(get_db), current_admin: dict 
 
 
 @router.put("/api/admin/roles/{role_name}", response_model=RoleResponse)
-def update_role(role_name: str, payload: RoleUpdate, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def update_role(role_name: str, payload: RoleUpdate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Update a role's modules and access levels. Only super admin can update roles."""
     existing = db.query(Role).filter(Role.name == role_name).first()
     if not existing:
@@ -789,11 +894,24 @@ def update_role(role_name: str, payload: RoleUpdate, db: Session = Depends(get_d
 
     db.commit()
     db.refresh(existing)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "role",
+        existing.name,
+        f"Role '{existing.name}' updated",
+        f"The role '{existing.label}' was updated.",
+        "updated",
+        {"role": existing.name, "label": existing.label},
+    )
+
     return existing
 
 
 @router.delete("/api/admin/roles/{role_name}")
-def delete_role(role_name: str, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def delete_role(role_name: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Delete a role. Only super admin can delete roles."""
     if role_name == "superadmin":
         raise HTTPException(status_code=400, detail="Cannot delete superadmin role")
@@ -801,16 +919,41 @@ def delete_role(role_name: str, db: Session = Depends(get_db), current_admin: di
     role = db.query(Role).filter(Role.name == role_name).first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
+    role_name_text = role.name
     db.delete(role)
     db.commit()
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "role",
+        role_name_text,
+        f"Role '{role_name_text}' deleted",
+        f"The role '{role_name_text}' was deleted.",
+        "deleted",
+        {"role": role_name_text},
+    )
+
     return {"deleted": True}
 
 
 @router.post("/api/admin/roles/init-builtin")
-def initialize_builtin_roles(db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
+def initialize_builtin_roles(background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Initialize/reset built-in roles. Only super admin can do this."""
     try:
         init_builtin_roles(db)
+        background_tasks.add_task(
+            notify_admin_event,
+            current_admin,
+            db,
+            "role",
+            "builtin_roles",
+            "Built-in roles initialized",
+            "Built-in roles were initialized or refreshed.",
+            "updated",
+            {"scope": "builtin_roles"},
+        )
         return {"status": "success", "message": "Built-in roles initialized"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -824,7 +967,7 @@ def list_builtin_roles(current_admin: dict = Depends(require_super_admin)):
 
 
 @router.post("/api/admin/pages", response_model=PageResponse)
-def create_page(page: PageCreate, db: Session = Depends(get_db), current_admin: dict = Depends(require_module("pages"))):
+def create_page(page: PageCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(require_module("pages"))):
     existing = db.query(Page).filter(Page.slug == page.slug).first()
     if existing:
         raise HTTPException(status_code=400, detail="Page with this slug already exists")
@@ -833,6 +976,19 @@ def create_page(page: PageCreate, db: Session = Depends(get_db), current_admin: 
     db.add(new_page)
     db.commit()
     db.refresh(new_page)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "page",
+        str(new_page.id),
+        f"Page '{new_page.slug}' created",
+        f"A new page named '{new_page.title}' was created.",
+        "created",
+        {"slug": new_page.slug, "title": new_page.title},
+    )
+
     return new_page
 
 
@@ -844,7 +1000,7 @@ def list_pages(db: Session = Depends(get_db), current_admin: dict = Depends(requ
 # ================= CONTENT BLOCKS (Admin - Protected) =================
 
 @router.post("/api/admin/content", response_model=ContentBlockResponse)
-def create_content_block(block: ContentBlockCreate, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+def create_content_block(block: ContentBlockCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
     new_block = ContentBlock(
         page_id=block.page_id,
         block_key=block.block_key,
@@ -855,6 +1011,19 @@ def create_content_block(block: ContentBlockCreate, db: Session = Depends(get_db
     db.add(new_block)
     db.commit()
     db.refresh(new_block)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "content_block",
+        str(new_block.id),
+        f"Content block '{new_block.block_key}' created",
+        f"Block '{new_block.block_key}' was created for page #{new_block.page_id}.",
+        "created",
+        {"page_id": new_block.page_id, "block_key": new_block.block_key},
+    )
+
     return new_block
 
 
@@ -890,13 +1059,28 @@ def update_content_block(block_id: int, block: ContentBlockCreate, background_ta
 
 
 @router.delete("/api/admin/content/{block_id}")
-def delete_content_block(block_id: int, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+def delete_content_block(block_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
     existing_block = db.query(ContentBlock).filter(ContentBlock.id == block_id).first()
     if not existing_block:
         raise HTTPException(status_code=404, detail="Content block not found")
 
+    block_key = existing_block.block_key
+    page_id = existing_block.page_id
     db.delete(existing_block)
     db.commit()
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "content_block",
+        str(block_id),
+        f"Content block '{block_key}' deleted",
+        f"Block '{block_key}' was deleted from page #{page_id}.",
+        "deleted",
+        {"page_id": page_id, "block_key": block_key},
+    )
+
     return {"status": "deleted"}
 
 
@@ -1038,6 +1222,7 @@ def get_brand_assets(db: Session = Depends(get_db), current_admin: dict = Depend
 @router.put("/api/admin/brand-assets", response_model=BrandAssetsResponse)
 def update_brand_assets(
     brand_assets: BrandAssets,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_admin: dict = Depends(require_module("settings"))
 ):
@@ -1053,6 +1238,18 @@ def update_brand_assets(
         db.add(new_setting)
         db.commit()
         db.refresh(new_setting)
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "brand_assets",
+        "brand_assets",
+        "Brand assets updated",
+        "The brand assets configuration was updated.",
+        "updated",
+        {"key": "brand_assets"},
+    )
     
     return BrandAssetsResponse(**existing.value if existing else new_setting.value)
 
@@ -1088,6 +1285,16 @@ async def upload_logo(
             db.add(existing)
         
         db.commit()
+        await notify_admin_event(
+            current_admin,
+            db,
+            "brand_assets",
+            "brand_assets",
+            "Logo uploaded",
+            "A new site logo was uploaded.",
+            "created",
+            {"logo_url": upload_result["secure_url"]},
+        )
         return {"success": True, "url": upload_result["secure_url"], "public_id": upload_result["public_id"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1124,6 +1331,16 @@ async def upload_favicon(
             db.add(existing)
         
         db.commit()
+        await notify_admin_event(
+            current_admin,
+            db,
+            "brand_assets",
+            "brand_assets",
+            "Favicon uploaded",
+            "A new site favicon was uploaded.",
+            "created",
+            {"favicon_url": upload_result["secure_url"]},
+        )
         return {"success": True, "url": upload_result["secure_url"], "public_id": upload_result["public_id"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1131,23 +1348,131 @@ async def upload_favicon(
 
 # ================= ADMIN — Inbox Dekhna =================
 
+@router.post("/api/messages", response_model=MessageResponse)
+async def create_message(payload: MessageCreate, db: Session = Depends(get_db)):
+    msg = Message(
+        name=payload.name,
+        email=payload.email,
+        services=payload.services,
+        message=payload.message,
+        status="new",
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    await notify_admin_event(
+        None,
+        db,
+        "message",
+        str(msg.id),
+        "New message received",
+        f"New message from {msg.name}.",
+        "created",
+        {"message_id": msg.id, "email": msg.email},
+    )
+    return msg
+
+
 @router.get("/api/admin/messages", response_model=list[MessageResponse])
 def list_messages(db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
     return db.query(Message).order_by(Message.created_at.desc()).all()
 
 
+@router.get("/api/admin/messages/counts")
+def message_counts(db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+    """Return the live inbox totals used by the admin message badges."""
+    return {
+        "total": db.query(Message).count(),
+        "unread": db.query(Message).filter(Message.status == "new").count(),
+        "replied": db.query(Message).filter(Message.status == "replied").count(),
+    }
+
+
 @router.get("/api/admin/messages/{message_id}", response_model=MessageResponse)
-def get_message(message_id: int, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+async def get_message(message_id: int, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
     msg = db.query(Message).filter(Message.id == message_id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    # Automatically "read" mark kar dein
-    if msg.status == "new":
+    notification_user_id = resolve_notification_user_id(current_admin, db=db)
+    message_was_unread = msg.status == "new"
+    matching_notifications = db.query(Notification).filter(
+        Notification.user_id == notification_user_id,
+        Notification.resource_type == "message",
+        Notification.resource_id == str(msg.id),
+        Notification.is_read == False,
+    )
+    notification_was_unread = matching_notifications.first() is not None
+
+    if message_was_unread:
         msg.status = "read"
+
+    if notification_was_unread:
+        matching_notifications.update(
+            {"is_read": True, "read_at": datetime.now(timezone.utc)},
+            synchronize_session=False,
+        )
+
+    if message_was_unread or notification_was_unread:
         db.commit()
 
+    await ws_manager.push_to_user(
+        notification_user_id,
+        {
+            "event": "message_read",
+            "message_id": msg.id,
+            "unread": db.query(Message).filter(Message.status == "new").count(),
+            "notification_unread_count": db.query(Notification).filter(
+                Notification.user_id == notification_user_id,
+                Notification.is_read == False,
+            ).count(),
+        },
+    )
+
     return msg
+
+
+@router.patch("/api/admin/messages/{message_id}/read")
+async def mark_message_read(message_id: int, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+    msg = db.query(Message).filter(Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    notification_user_id = resolve_notification_user_id(current_admin, db=db)
+    if msg.status == "new":
+        msg.status = "read"
+
+    db.query(Notification).filter(
+        Notification.user_id == notification_user_id,
+        Notification.resource_type == "message",
+        Notification.resource_id == str(msg.id),
+        Notification.is_read == False,
+    ).update(
+        {"is_read": True, "read_at": datetime.now(timezone.utc)},
+        synchronize_session=False,
+    )
+    db.commit()
+
+    unread = db.query(Message).filter(Message.status == "new").count()
+    notification_unread_count = db.query(Notification).filter(
+        Notification.user_id == notification_user_id,
+        Notification.is_read == False,
+    ).count()
+    await ws_manager.push_to_user(
+        notification_user_id,
+        {
+            "event": "message_read",
+            "message_id": msg.id,
+            "unread": unread,
+            "notification_unread_count": notification_unread_count,
+        },
+    )
+    return {
+        "message_id": msg.id,
+        "unread": unread,
+        "notification_unread_count": notification_unread_count,
+    }
 
 
 @router.delete("/api/admin/messages/{message_id}")
@@ -1185,19 +1510,41 @@ def update_page_meta(page_id: int, meta_data: dict, background_tasks: Background
 
 
 @router.post("/api/admin/messages/{message_id}/reply")
-def reply_to_message(message_id: int, reply: ReplyRequest, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
+def reply_to_message(message_id: int, reply: ReplyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), current_admin: dict = Depends(get_current_admin)):
     msg = db.query(Message).filter(Message.id == message_id).first()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    send_email(
-        to_email=msg.email,
-        subject=f"Re: {msg.services or 'Your inquiry'}", 
-        body=reply.reply_message
-    )
+    email_sent = False
+    try:
+        email_sent = send_email(
+            to_email=msg.email,
+            subject=f"Re: {msg.services or 'Your inquiry'}",
+            body=reply.reply_message,
+        )
+    except Exception:
+        email_sent = False
 
     msg.status = "replied"
     db.commit()
+
+    background_tasks.add_task(
+        notify_admin_event,
+        current_admin,
+        db,
+        "message",
+        str(msg.id),
+        "Message replied",
+        f"Reply sent for '{msg.name}' regarding '{msg.services or 'your inquiry'}'.",
+        "updated",
+        {"message_id": msg.id, "email": msg.email},
+    )
+
+    if not email_sent:
+        return {
+            "status": "Reply saved successfully",
+            "warning": "The email could not be delivered right now. Please check your SMTP settings.",
+        }
 
     return {"status": "Reply sent successfully"}
 
@@ -1431,84 +1778,84 @@ async def delete_media(media_id: int, db: Session = Depends(get_db), current_adm
 
 
 
-@router.post("/api/admin/leads", response_model=LeadsResponse)
-async def create_lead(
-    message: LeadsResponse,
-    db: Session = Depends(get_db)
-):
-    new_lead = Lead(
-        username=message.username,
-        email=message.email,
-        phone=message.phone,
-        service_type=message.service_type,
-        city=message.city,
-    )
+# @router.post("/api/admin/leads", response_model=LeadsResponse)
+# async def create_lead(
+#     message: LeadsResponse,
+#     db: Session = Depends(get_db)
+# ):
+#     new_lead = Lead(
+#         username=message.username,
+#         email=message.email,
+#         phone=message.phone,
+#         service_type=message.service_type,
+#         city=message.city,
+#     )
 
-    db.add(new_lead)
-    db.commit()
-    db.refresh(new_lead)
+#     db.add(new_lead)
+#     db.commit()
+#     db.refresh(new_lead)
 
-    admin_user = db.query(AdminUser).order_by(AdminUser.id.asc()).first()
-    await notify(
-        user_id=resolve_notification_user_id({"email": admin_user.email} if admin_user and admin_user.email else None, db=db),
-        resource_type="lead",
-        resource_id=str(new_lead.id),
-        type_="created",
-        title="New lead received",
-        message=f"Lead from {new_lead.username} ({new_lead.email})",
-        db=db,
-    )
+#     admin_user = db.query(AdminUser).order_by(AdminUser.id.asc()).first()
+#     await notify(
+#         user_id=resolve_notification_user_id({"email": admin_user.email} if admin_user and admin_user.email else None, db=db),
+#         resource_type="lead",
+#         resource_id=str(new_lead.id),
+#         type_="created",
+#         title="New lead received",
+#         message=f"Lead from {new_lead.username} ({new_lead.email})",
+#         db=db,
+#     )
 
-    return new_lead
+#     return new_lead
 
 
 
-@router.get("/api/admin/leads", response_model=list[LeadsResponse])
-async def get_leads(
-    db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 50,
-):
-    leads = (
-        db.query(Lead)
-        .order_by(Lead.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-    return leads
+# @router.get("/api/admin/leads", response_model=list[LeadsResponse])
+# async def get_leads(
+#     db: Session = Depends(get_db),
+#     skip: int = 0,
+#     limit: int = 50,
+# ):
+#     leads = (
+#         db.query(Lead)
+#         .order_by(Lead.created_at.desc())
+#         .offset(skip)
+#         .limit(limit)
+#         .all()
+#     )
+#     return leads
 
-@router.patch("/api/admin/leads/{lead_id}", response_model=LeadsResponse)
-async def update_lead(
-    lead_id: int,
-    lead_update: LeadsResponse,
-    db: Session = Depends(get_db)
-):
-    lead = db.query(Lead).filter(Lead.id == lead_id).first()
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
+# @router.patch("/api/admin/leads/{lead_id}", response_model=LeadsResponse)
+# async def update_lead(
+#     lead_id: int,
+#     lead_update: LeadsResponse,
+#     db: Session = Depends(get_db)
+# ):
+#     lead = db.query(Lead).filter(Lead.id == lead_id).first()
+#     if not lead:
+#         raise HTTPException(status_code=404, detail="Lead not found")
 
-    lead.username = lead_update.username
-    lead.email = lead_update.email
-    lead.phone = lead_update.phone
-    lead.service_type = lead_update.service_type
-    lead.city = lead_update.city
+#     lead.username = lead_update.username
+#     lead.email = lead_update.email
+#     lead.phone = lead_update.phone
+#     lead.service_type = lead_update.service_type
+#     lead.city = lead_update.city
 
-    db.commit()
-    db.refresh(lead)
+#     db.commit()
+#     db.refresh(lead)
 
-    admin_user = db.query(AdminUser).order_by(AdminUser.id.asc()).first()
-    await notify(
-        user_id=resolve_notification_user_id({"email": admin_user.email} if admin_user and admin_user.email else None, db=db),
-        resource_type="lead",
-        resource_id=str(lead.id),
-        type_="updated",
-        title="Lead updated",
-        message=f"Lead {lead.username} ({lead.email}) was updated",
-        db=db,
-    )
+#     admin_user = db.query(AdminUser).order_by(AdminUser.id.asc()).first()
+#     await notify(
+#         user_id=resolve_notification_user_id({"email": admin_user.email} if admin_user and admin_user.email else None, db=db),
+#         resource_type="lead",
+#         resource_id=str(lead.id),
+#         type_="updated",
+#         title="Lead updated",
+#         message=f"Lead {lead.username} ({lead.email}) was updated",
+#         db=db,
+#     )
 
-    return lead
+#     return lead
 
 
 
@@ -1593,36 +1940,36 @@ def build_pdf(leads: list[Lead], fields: list[str]) -> io.BytesIO:
 
 
 
-@router.post("/api/admin/leads/download")
-async def download_leads(
-    payload: LeadExportRequest,
-    db: Session = Depends(get_db),
-    # admin: AdminUser = Depends(get_current_admin_user),
-):
-    leads = get_leads_for_export(db, payload)
-    fields = resolve_fields(payload.fields)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+# @router.post("/api/admin/leads/download")
+# async def download_leads(
+#     payload: LeadExportRequest,
+#     db: Session = Depends(get_db),
+#     # admin: AdminUser = Depends(get_current_admin_user),
+# ):
+#     leads = get_leads_for_export(db, payload)
+#     fields = resolve_fields(payload.fields)
+#     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    if payload.format == "csv":
-        buffer = build_csv(leads, fields)
-        return StreamingResponse(
-            iter([buffer.getvalue()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.csv"},
-        )
+#     if payload.format == "csv":
+#         buffer = build_csv(leads, fields)
+#         return StreamingResponse(
+#             iter([buffer.getvalue()]),
+#             media_type="text/csv",
+#             headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.csv"},
+#         )
 
-    if payload.format == "excel":
-        buffer = build_excel(leads, fields)
-        return StreamingResponse(
-            buffer,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.xlsx"},
-        )
+#     if payload.format == "excel":
+#         buffer = build_excel(leads, fields)
+#         return StreamingResponse(
+#             buffer,
+#             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#             headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.xlsx"},
+#         )
 
-    if payload.format == "pdf":
-        buffer = build_pdf(leads, fields)
-        return StreamingResponse(
-            buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.pdf"},
-        )
+#     if payload.format == "pdf":
+#         buffer = build_pdf(leads, fields)
+#         return StreamingResponse(
+#             buffer,
+#             media_type="application/pdf",
+#             headers={"Content-Disposition": f"attachment; filename=leads_{timestamp}.pdf"},
+#         )

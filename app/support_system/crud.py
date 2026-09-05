@@ -23,7 +23,7 @@ def _check_access(current_admin: dict, required_access: ModuleAccess):
     # Check for support_system module access
     for module in modules:
         if isinstance(module, dict):
-            if "support_system" in module:
+            if "support_system" in module:  
                 user_access = module["support_system"].lower()
                 required = required_access.value.lower()
                 
@@ -54,7 +54,7 @@ def get_or_create_customer(db: Session, email: str, name: str | None = None, pho
         if phone and not customer.phone:
             customer.phone = phone
         if (name and not customer.name) or (phone and not customer.phone):
-            db.commit()
+            db.commit() 
             db.refresh(customer)
         return customer
 
