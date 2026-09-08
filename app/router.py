@@ -1166,9 +1166,12 @@ def get_public_settings(db: Session = Depends(get_db)):
 # ================= SITE IDENTITY =================
 
 @router.get("/api/admin/site-identity", response_model=SiteIdentityResponse)
-def get_site_identity(db: Session = Depends(get_db), current_admin: dict = Depends(require_module("settings"))):
+def get_site_identity(db: Session = Depends(get_db)):
     """Get site identity settings"""
     setting = db.query(SiteSetting).filter(SiteSetting.key == "site_identity").first()
+    brand_assets = db.query(SiteSetting).filter(SiteSetting.key == "brand_assets").first()
+    brand_values = dict(brand_assets.value or {}) if brand_assets else {}
+    brand_values.setdefault("social_media", {})
     if not setting:
         # Return default values if not set
         return SiteIdentityResponse(
@@ -1177,9 +1180,10 @@ def get_site_identity(db: Session = Depends(get_db), current_admin: dict = Depen
             contact_form_notification_email="admin@example.com",
             admin_email="admin@example.com",
             timezone="UTC",
-            language="en-US"
+            language="en-US",
+            **brand_values,
         )
-    return SiteIdentityResponse(**setting.value)
+    return SiteIdentityResponse(**{**setting.value, **brand_values})
 
 
 @router.put("/api/admin/site-identity", response_model=SiteIdentityResponse)
@@ -1190,18 +1194,32 @@ def update_site_identity(
 ):
     """Update site identity settings"""
     existing = db.query(SiteSetting).filter(SiteSetting.key == "site_identity").first()
+    values = site_identity.model_dump()
+    brand_values = {
+        key: values.pop(key)
+        for key in ("logo_url", "logo_public_id", "favicon_url", "favicon_public_id", "social_media")
+        if values.get(key) is not None
+    }
     
     if existing:
-        existing.value = site_identity.model_dump()
+        existing.value = values
         db.commit()
         db.refresh(existing)
     else:
-        new_setting = SiteSetting(key="site_identity", value=site_identity.model_dump())
+        new_setting = SiteSetting(key="site_identity", value=values)
         db.add(new_setting)
         db.commit()
         db.refresh(new_setting)
+
+    if brand_values:
+        brand_assets = db.query(SiteSetting).filter(SiteSetting.key == "brand_assets").first()
+        if brand_assets:
+            brand_assets.value = {**(brand_assets.value or {}), **brand_values}
+        else:
+            db.add(SiteSetting(key="brand_assets", value=brand_values))
+        db.commit()
     
-    return SiteIdentityResponse(**existing.value if existing else new_setting.value)
+    return get_site_identity(db=db, current_admin=current_admin)
 
 
 # ================= BRAND ASSETS =================
@@ -1272,8 +1290,11 @@ async def upload_logo(
         # Save to database
         existing = db.query(SiteSetting).filter(SiteSetting.key == "brand_assets").first()
         if existing:
-            existing.value["logo_url"] = upload_result["secure_url"]
-            existing.value["logo_public_id"] = upload_result["public_id"]
+            existing.value = {
+                **(existing.value or {}),
+                "logo_url": upload_result["secure_url"],
+                "logo_public_id": upload_result["public_id"],
+            }
         else:
             existing = SiteSetting(
                 key="brand_assets",
@@ -1318,8 +1339,11 @@ async def upload_favicon(
         # Save to database
         existing = db.query(SiteSetting).filter(SiteSetting.key == "brand_assets").first()
         if existing:
-            existing.value["favicon_url"] = upload_result["secure_url"]
-            existing.value["favicon_public_id"] = upload_result["public_id"]
+            existing.value = {
+                **(existing.value or {}),
+                "favicon_url": upload_result["secure_url"],
+                "favicon_public_id": upload_result["public_id"],
+            }
         else:
             existing = SiteSetting(
                 key="brand_assets",

@@ -120,23 +120,6 @@ class SiteSettingResponse(BaseModel):
     value: dict
     model_config = ConfigDict(from_attributes=True)
 
-# ---------- Site Identity ----------
-class SiteIdentity(BaseModel):
-    site_name: str
-    tagline: Optional[str] = None
-    contact_form_notification_email: EmailStr
-    admin_email: EmailStr
-    timezone: str = "UTC"
-    language: str = "en-US"
-
-class SiteIdentityResponse(BaseModel):
-    site_name: str
-    tagline: Optional[str] = None
-    contact_form_notification_email: EmailStr
-    admin_email: EmailStr
-    timezone: str
-    language: str
-
 # ---------- Brand Assets ----------
 class SocialMediaLinks(BaseModel):
     twitter: Optional[str] = None
@@ -145,6 +128,34 @@ class SocialMediaLinks(BaseModel):
     facebook: Optional[str] = None
     youtube: Optional[str] = None
     whatsapp: Optional[str] = None
+
+
+# ---------- Site Identity ----------
+class SiteIdentity(BaseModel):
+    site_name: str
+    tagline: Optional[str] = None
+    contact_form_notification_email: EmailStr
+    admin_email: EmailStr
+    timezone: str = "UTC"
+    language: str = "en-US"
+    logo_url: Optional[str] = None
+    logo_public_id: Optional[str] = None
+    favicon_url: Optional[str] = None
+    favicon_public_id: Optional[str] = None
+    social_media: Optional[SocialMediaLinks] = None
+
+class SiteIdentityResponse(BaseModel):
+    site_name: str
+    tagline: Optional[str] = None
+    contact_form_notification_email: EmailStr
+    admin_email: EmailStr
+    timezone: str
+    language: str
+    logo_url: Optional[str] = None
+    logo_public_id: Optional[str] = None
+    favicon_url: Optional[str] = None
+    favicon_public_id: Optional[str] = None
+    social_media: Optional[SocialMediaLinks] = None
 
 class BrandAssets(BaseModel):
     logo_url: Optional[str] = None
