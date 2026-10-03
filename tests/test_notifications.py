@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from app.models import Card
 from app.router import resolve_notification_user_id, upload_profile_image_to_cloudinary, build_admin_dashboard_summary, _find_env_file
 from app.schema import AdminProfileUpdate
 from app.auth import _normalize_role_name
@@ -77,3 +80,10 @@ def test_build_admin_dashboard_summary_has_expected_sections():
     assert summary["seo_health_score"] == 82
     assert summary["admin_leads"] == 800
     assert isinstance(summary["recent_activity"], list)
+
+
+def test_card_exposes_legacy_card_number_field():
+    card = Card(user_id=1, card_number="1234", bank_name="HBL", balance=Decimal("100.00"))
+
+    assert card.card_number == "1234"
+    assert card.card_number_last_4 == "1234"

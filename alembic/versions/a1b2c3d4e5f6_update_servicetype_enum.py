@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -46,39 +45,21 @@ new_values = (
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Create new enum type
-    new_enum = postgresql.ENUM(*new_values, name='servicetype_new')
-    new_enum.create(op.get_bind(), checkfirst=False)
-    
     # Update old values to 'other' (which exists in both old and new enums)
     op.execute("UPDATE messages SET services = NULL WHERE services NOT IN ('other')")
     op.execute("UPDATE leads SET service_type = 'other' WHERE service_type IN ('web_development', 'seo', 'graphic_design', 'digital_marketing', 'app_development', 'content_writing')")
-    
-    # Alter columns to use new enum
-    op.execute("ALTER TABLE messages ALTER COLUMN services TYPE servicetype_new USING services::text::servicetype_new")
-    op.execute("ALTER TABLE leads ALTER COLUMN service_type TYPE servicetype_new USING service_type::text::servicetype_new")
-    
-    # Drop old enum and rename new one
-    op.execute("DROP TYPE servicetype")
-    op.execute("ALTER TYPE servicetype_new RENAME TO servicetype")
+
+    service_type_enum = sa.Enum(*new_values, name='servicetype')
+    op.alter_column('messages', 'services', type_=service_type_enum,
+                    existing_nullable=True)
+    op.alter_column('leads', 'service_type', type_=service_type_enum,
+                    existing_nullable=True)
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    # Create old enum type
-    old_enum = postgresql.ENUM(*old_values, name='servicetype_old')
-    old_enum.create(op.get_bind(), checkfirst=False)
-    
-    # Alter columns back to old enum
-    # Note: This will fail if there are values that don't exist in the old enum
-    try:
-        op.execute("ALTER TABLE messages ALTER COLUMN services TYPE servicetype_old USING services::text::servicetype_old")
-        op.execute("ALTER TABLE leads ALTER COLUMN service_type TYPE servicetype_old USING service_type::text::servicetype_old")
-    except:
-        # If conversion fails, use VARCHAR as fallback
-        op.alter_column('messages', 'services', type_=sa.VARCHAR(255))
-        op.alter_column('leads', 'service_type', type_=sa.VARCHAR(255))
-    
-    # Drop new enum and rename old one
-    op.execute("DROP TYPE servicetype")
-    op.execute("ALTER TYPE servicetype_old RENAME TO servicetype")
+    service_type_enum = sa.Enum(*old_values, name='servicetype')
+    op.alter_column('messages', 'services', type_=service_type_enum,
+                    existing_nullable=True)
+    op.alter_column('leads', 'service_type', type_=service_type_enum,
+                    existing_nullable=True)

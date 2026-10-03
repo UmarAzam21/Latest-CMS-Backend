@@ -1,8 +1,9 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, Field,field_validator
 from typing import Optional, Any, Union
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 import uuid
-from .enums import ServiceType
+from .enums import ServiceType, ExpenseType, DebtCategory, ExpenseCategory, ExpenseCategoryColor, ExpenseAccountType
 from typing import Literal
 
 
@@ -67,8 +68,6 @@ class AdminUserWithRoleResponse(BaseModel):
     name: Optional[str] = None
     email: str
     role: str
-    created_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
 
 # ---------- Login ----------
 class LoginRequest(BaseModel):
@@ -219,7 +218,6 @@ class NotificationOut(BaseModel):
     type: str
     title: str
     message: Optional[str] = None
-    data: Optional[dict] = None
     is_read: bool
     created_at: Any
     read_at: Optional[Any] = None
@@ -341,4 +339,87 @@ class Token(BaseModel):
     token_type: str = "bearer"
     slug: str = "user"
     redirect_to: str = "/user-dashboard"
- 
+
+
+class IncomeExpenseSummaryResponse(BaseModel):
+    id: int
+    expense_type: ExpenseType
+    subject: str
+    category: str
+    amount: Decimal
+    entry_date: date
+    account_id: Optional[int] = None
+    description: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExpenseCategorySummaryResponse(BaseModel):
+    categories: list[ExpenseCategory]
+    colors: list[ExpenseCategoryColor]
+
+
+class ExpenseCategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    color: ExpenseCategoryColor
+    type: ExpenseType
+
+
+class ExpenseCategoryOptionResponse(BaseModel):
+    id: int
+    type: ExpenseType
+    name: str
+    color: str
+    is_default: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExpenseCategoryFeedResponse(BaseModel):
+    categories: list[ExpenseCategoryOptionResponse]
+    colors: list[ExpenseCategoryColor]
+
+
+class CardBalanceResponse(BaseModel):
+    card_id: int
+    balance: Decimal
+
+
+class CardResponse(BaseModel):
+    id: int
+    # card_type: ExpenseAccountType
+    card_number: str
+    bank_name: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+    balance: Decimal = 0
+
+
+# AccountBalanceResponse = CardBalanceResponse
+# AccountResponse = CardResponse
+
+
+# CARD_TABLE_SKETCH = """
+#     **cards**
+# | column | type | notes |
+# |---|---|---|
+# | id | uuid PK | |
+# | user_id | uuid FK | |
+# | label | text | |
+# | balance | numeric(12,2) | |
+# | last4 | varchar(4) | |
+# | expiry_month | int | |
+# | expiry_year | int | |
+# | gradient | enum(primary,secondary,dark) | |
+# """
+
+class Debt(BaseModel):
+    id: int
+    subject: str
+    amount: Decimal
+    card_id: Optional[int] = None
+    category1: DebtCategory
+    entry_date: date
+    description: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime

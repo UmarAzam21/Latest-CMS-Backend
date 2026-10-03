@@ -1,4 +1,5 @@
 import io
+import shutil
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from .enums import ServiceType
 from app.email_utils import send_email
 from .db import get_db
 from .models import AdminUser, ContentBlock, Lead, Page, Role, SiteSetting, Media, Message, PasswordResetToken, Notification
+from app.xlsx_import.router import queue_import, UPLOAD_DIR
 from .schema import (
     ContentBlockCreate,
     ContentBlockResponse,
@@ -1715,23 +1717,20 @@ async def import_xlsx(
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="Only .xlsx files are supported")
 
-    contents = await file.read()
-    parsed = parse_xlsx_upload(io.BytesIO(contents), file.filename)
-
-    try:
-        db = next(get_db())
-        db.close()
-    except Exception:
-        pass
+    staged_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}_{file.filename}")
+    with open(staged_path, "wb") as staged_file:
+        shutil.copyfileobj(file.file, staged_file)
+    table_name = queue_import([staged_path], [file.filename])
 
     return {
-        "message": "XLSX staged for import",
-        "filename": parsed["filename"],
-        "sheet_names": parsed["sheet_names"],
-        "headers": parsed["headers"],
-        "row_count": parsed["row_count"],
-        "rows": parsed["rows"],
-        "status": "staged",
+        "message": "XLSX import started in background",
+        "filename": file.filename,
+        "sheet_names": [],
+        "headers": [],
+        "row_count": 0,
+        "rows": [],
+        "status": "processing",
+        "table_name": table_name,
     }
 
 

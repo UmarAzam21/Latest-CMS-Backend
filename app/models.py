@@ -1,6 +1,6 @@
 import datetime
 import enum
-from datetime import timezone
+from datetime import timezone,date, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -15,12 +15,15 @@ from sqlalchemy import (
     String,
     Text,
     TIMESTAMP,
+    Numeric,
+    Date,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from .db import Base
-from .enums import ServiceType
+from .enums import ServiceType, ExpenseType, ExpenseAccountType,CardColor,DebtCategory
 from enum import Enum as PyEnum
 
 class AdminUser(Base):
@@ -116,7 +119,7 @@ class Notification(Base):
     resource_id = Column(String(64), nullable=True)
     type = Column(SAEnum(NotificationType), nullable=False)
     title = Column(String(255), nullable=False)
-    message = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
     data = Column(JSON, nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -131,7 +134,7 @@ class Notification(Base):
     
     
 def utcnow():
-    return datetime.datetime.now(timezone.utc)
+    return datetime.now(timezone.utc)
 
 
 class TicketStatus(str, enum.Enum):
@@ -228,8 +231,8 @@ class Lead(Base):
         nullable=True,
     )
     city = Column(String(100), nullable=False)
-    cnic = Column(String, nullable=True)
-    status = Column(String, nullable=True, default="partial")
+    cnic = Column(String(50), nullable=True)
+    status = Column(String(50), nullable=True, default="partial")
     created_at = Column(DateTime(timezone=False), default=utcnow)
 
 
@@ -242,3 +245,77 @@ class User(Base):
     phone = Column(String(20), nullable=True, unique=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=False), default=utcnow)
+
+
+
+class Card(Base):
+    __tablename__ = "expense_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    card_number_last_4 = Column("account_number", String(4), nullable=False, unique=True)
+    bank_name = Column(String(255), nullable=True)
+    balance = Column("account_balance", Numeric(12, 2), nullable=False, default=0)
+    created_at = Column(DateTime(timezone=False), default=utcnow)
+    expiry_month = Column(Integer, nullable=True)
+    expiry_year = Column(Integer, nullable=True)
+    card_color = Column(SAEnum(CardColor), nullable=True)
+
+    @property
+    def card_number(self) -> str:
+        return self.card_number_last_4
+
+    @card_number.setter
+    def card_number(self, value: str) -> None:
+        self.card_number_last_4 = value
+
+
+Account = Card
+
+
+class ExpenseCategoryOption(Base):
+    __tablename__ = "expense_category_options"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type = Column(
+        SAEnum(ExpenseType, name="expense_type_enum"),
+        nullable=False,
+        server_default="expense",
+    )
+    name = Column(String(80), nullable=False)
+    color = Column(String(7), nullable=False)
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=False), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_expense_category_user_name"),)
+
+
+class IncomeExpense(Base):
+    __tablename__ = "income_expense"
+
+    id = Column(Integer, primary_key=True, index=True)
+    type = Column(SAEnum(ExpenseType, name="income_expense_type_enum"), nullable=False)
+    subject = Column(String(255), nullable=False)
+    category = Column(String(80), nullable=False, default="Other")
+    amount = Column(Numeric(12, 2), nullable=False)
+    entry_date = Column(Date, nullable=False, default=date.today)
+    account_id = Column(Integer, ForeignKey("expense_accounts.id"), nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+
+class Debt(Base):
+    __tablename__ = "debts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject = Column(String(255), nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
+    category1 = Column(SAEnum(DebtCategory, name="debt_category_enum"), nullable=False)
+    entry_date = Column(Date, nullable=False, default=date.today)
+    description = Column(Text, nullable=True)
+    card_id = Column(Integer, ForeignKey("expense_accounts.id"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

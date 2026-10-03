@@ -10,7 +10,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic
@@ -24,7 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
 
-    service_type_enum = postgresql.ENUM(
+    service_type_enum = sa.Enum(
         'web_development',
         'seo',
         'graphic_design',
@@ -33,7 +32,6 @@ def upgrade() -> None:
         'content_writing',
         'other',
         name='servicetype',
-        create_type=False,
     )
 
     op.create_table(

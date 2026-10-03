@@ -1,9 +1,10 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import engine_from_config, inspect, text
 from sqlalchemy import pool
 
 from alembic import context
+from alembic.script import ScriptDirectory
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -22,6 +23,9 @@ if config.config_file_name is not None:
 
 import sys
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from app.db import Base
@@ -29,6 +33,10 @@ from app import models
 
 
 target_metadata = Base.metadata
+
+database_url = os.getenv("DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 
 def include_object(object, name, type_, reflected, compare_to):
@@ -85,6 +93,48 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # The original initial revision is empty because the app historically
+        # created its schema with Base.metadata.create_all(). Bootstrap only a
+        # truly empty database, preserving normal migrations for existing DBs.
+        inspector = inspect(connection)
+        user_tables = [
+            name for name in inspector.get_table_names()
+            if name != "alembic_version"
+        ]
+        version_rows = []
+        if "alembic_version" in inspector.get_table_names():
+            version_rows = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalars().all()
+        interrupted_bootstrap = (
+            version_rows == ["bc824a76dd00"]
+        )
+        if not user_tables or interrupted_bootstrap:
+            Base.metadata.create_all(bind=connection)
+            heads = ScriptDirectory.from_config(config).get_heads()
+            if len(heads) != 1:
+                raise RuntimeError("Expected exactly one Alembic head for fresh database bootstrap")
+            if "alembic_version" not in inspector.get_table_names():
+                connection.execute(
+                    text(
+                        "CREATE TABLE alembic_version ("
+                        "version_num VARCHAR(32) NOT NULL, "
+                        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
+                        ")"
+                    )
+                )
+                connection.execute(
+                    text("INSERT INTO alembic_version (version_num) VALUES (:head)"),
+                    {"head": heads[0]},
+                )
+            else:
+                connection.execute(
+                    text("UPDATE alembic_version SET version_num = :head"),
+                    {"head": heads[0]},
+                )
+            connection.commit()
+            return
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

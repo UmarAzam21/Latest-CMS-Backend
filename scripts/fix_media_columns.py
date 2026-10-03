@@ -1,6 +1,14 @@
-from sqlalchemy import create_engine, text
+import os
 
-DATABASE_URL = "postgresql://postgres:umar123@localhost:5432/cms_db"
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql+pymysql://root:@localhost:3306/filernow_db",
+)
 engine = create_engine(DATABASE_URL)
 
 with engine.begin() as conn:

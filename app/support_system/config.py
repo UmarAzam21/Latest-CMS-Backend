@@ -15,7 +15,7 @@ class Settings:
     # Database
     DATABASE_URL: str = _get(
         "DATABASE_URL",
-        "postgresql://postgres:umar123@localhost:5432/cms_db",
+        "mysql+pymysql://root:@localhost:3306/filernow_db",
     )
 
     # Domain used to build ticket+<id>@yourdomain.com addresses

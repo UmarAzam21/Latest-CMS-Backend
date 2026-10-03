@@ -40,3 +40,44 @@ class ModuleAccess(str, enum.Enum):
     READ = "read"
     UPDATE = "update"
     ALL = "all"
+
+class ExpenseType(str, enum.Enum):
+    expense = "Expense"
+    income = "income"
+    debt = "debt"
+
+
+class ExpenseCategory(str, enum.Enum):
+    utilities = "Utilities"
+    food = "Food"
+    transport = "Transport"
+    rent = "rent"
+    business = "Business"
+    other = "Other"
+
+
+class ExpenseCategoryColor(str, enum.Enum):
+    Red = "#FF5733" 
+    Green = "#33FF57"      
+    Blue = "#3357FF"
+    Yellow = "#F1C40F"    
+    Purple = "#8E44AD"  
+    Gray = "#95A5A6"     
+
+
+class ExpenseAccountType(str, enum.Enum):
+    personal = "Personal Card"
+    business = "Business Card"
+    debit = "Debit Card"
+
+
+
+class CardColor(str, enum.Enum):
+    Primary = "#b51632"
+    Secondary = "#4ab898"
+    Dark = "#474f5a"
+
+
+class DebtCategory(str, enum.Enum):
+    DebtToTake = "Debt to Take"
+    DebtToGive = "Debt to Give"

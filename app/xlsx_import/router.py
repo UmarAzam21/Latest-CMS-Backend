@@ -6,7 +6,6 @@ import threading
 from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, HTTPException, Query
-from psycopg2 import errors as pg_errors
 
 from app.db import engine  # <-- adjust if your engine var is named differently
 from .control import set_status, update_progress
@@ -25,10 +24,36 @@ from .importer import (
 logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = os.environ.get("XLSX_UPLOAD_DIR", "/tmp/xlsx-uploads")
-BATCH_SIZE = int(os.environ.get("XLSX_BATCH_SIZE", "20000"))
+BATCH_SIZE = int(os.environ.get("XLSX_BATCH_SIZE", "5000"))
+MAX_BATCH_BYTES = int(os.environ.get("XLSX_MAX_BATCH_BYTES", str(8 * 1024 * 1024)))
+PROGRESS_INTERVAL = int(os.environ.get("XLSX_PROGRESS_INTERVAL", "50000"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 router = APIRouter(prefix="/xlsx", tags=["xlsx-import"])
+
+
+def queue_import(staged_paths: List[str], filenames: List[str]) -> str:
+    table_name = new_table_name()
+
+    conn = engine.raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO dataset_versions (table_name, status, row_count, processed_rows, source_file) "
+        "VALUES (%s, 'importing', 0, 0, %s)",
+        (table_name, ", ".join(filenames)),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    logger.info("Scheduled import task for %s with %d files", table_name, len(staged_paths))
+    import_thread = threading.Thread(
+        target=_run_import_job,
+        args=(table_name, staged_paths),
+        daemon=False,
+    )
+    import_thread.start()
+    return table_name
 
 
 @router.post(
@@ -85,24 +110,7 @@ async def import_xlsx(
         staged_paths.append(staged_path)
         filenames.append(f.filename)
 
-    table_name = new_table_name()
-
-    conn = engine.raw_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO dataset_versions (table_name, status, row_count, processed_rows, source_file) "
-        "VALUES (%s, 'importing', 0, 0, %s)",
-        (table_name, ", ".join(filenames)),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    logger.info("Scheduled import task for %s with %d files", table_name, len(staged_paths))
-
-    # Start import in a background thread to ensure it runs
-    import_thread = threading.Thread(target=_run_import_job, args=(table_name, staged_paths), daemon=False)
-    import_thread.start()
+    table_name = queue_import(staged_paths, filenames)
 
     return {
         "status": "processing",
@@ -122,6 +130,7 @@ def _run_import_job(table_name: str, staged_paths: List[str]):
         logger.info("Creating table %s", table_name)
         create_import_table(table_name, columns)
         logger.info("Table created successfully")
+        update_progress(table_name, 0)
 
         logger.info("Loading rows from %d files", len(staged_paths))
         row_count = load_rows_into_table(
@@ -129,7 +138,9 @@ def _run_import_job(table_name: str, staged_paths: List[str]):
             columns,
             staged_paths,
             batch_size=BATCH_SIZE,
+            max_batch_bytes=MAX_BATCH_BYTES,
             progress_cb=lambda n: update_progress(table_name, n),
+            progress_interval=PROGRESS_INTERVAL,
         )
         logger.info("Loaded %d rows into table", row_count)
 
@@ -161,7 +172,7 @@ def _fail_and_drop(table_name: str, error_message: str):
     set_status(table_name, "failed", error_message=error_message)
     conn = engine.raw_connection()
     cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    cur.execute(f'DROP TABLE IF EXISTS `{table_name}`')
     conn.commit()
     cur.close()
     conn.close()
@@ -207,29 +218,18 @@ def search(q: str = Query(..., min_length=1), limit: int = 20, offset: int = 0):
     try:
         cur = conn.cursor()
         try:
-            # First, get total count of matching results for pagination
             cur.execute(
-                """
-                SELECT COUNT(*) as total_count
-                FROM current_dataset
-                WHERE search_vector @@ websearch_to_tsquery('english', %s)
-                """,
+                "SELECT COUNT(*) FROM current_dataset "
+                "WHERE MATCH(search_text) AGAINST (%s IN BOOLEAN MODE)",
                 (q,),
             )
             total_count = cur.fetchone()[0]
-            
-            # Then fetch paginated results with better ranking
+
             cur.execute(
-                """
-                SELECT *, 
-                       ts_rank(search_vector, websearch_to_tsquery('english', %s)) AS rank,
-                       ts_rank_cd(search_vector, websearch_to_tsquery('english', %s)) AS rank_cd
-                FROM current_dataset
-                WHERE search_vector @@ websearch_to_tsquery('english', %s)
-                ORDER BY rank_cd DESC, rank DESC
-                LIMIT %s OFFSET %s
-                """,
-                (q, q, q, limit, offset),
+                "SELECT * FROM current_dataset "
+                "WHERE MATCH(search_text) AGAINST (%s IN BOOLEAN MODE) "
+                "LIMIT %s OFFSET %s",
+                (q, limit, offset),
             )
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -243,46 +243,11 @@ def search(q: str = Query(..., min_length=1), limit: int = 20, offset: int = 0):
                 "offset": offset,
                 "results": rows
             }
-        except pg_errors.UndefinedTable:
+        except Exception as exc:
             conn.rollback()
-            raise HTTPException(404, "No dataset has been imported yet.")
-        except pg_errors.SyntaxError:
-            # Fallback to simpler query if websearch_to_tsquery fails
-            conn.rollback()
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT COUNT(*) as total_count
-                FROM current_dataset
-                WHERE search_vector @@ plainto_tsquery('english', %s)
-                """,
-                (q,),
-            )
-            total_count = cur.fetchone()[0]
-            
-            cur.execute(
-                """
-                SELECT *, 
-                       ts_rank(search_vector, plainto_tsquery('english', %s)) AS rank
-                FROM current_dataset
-                WHERE search_vector @@ plainto_tsquery('english', %s)
-                ORDER BY rank DESC
-                LIMIT %s OFFSET %s
-                """,
-                (q, q, limit, offset),
-            )
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-            conn.commit()
-            
-            return {
-                "query": q, 
-                "total_count": total_count,
-                "count": len(rows), 
-                "limit": limit,
-                "offset": offset,
-                "results": rows
-            }
+            if "current_dataset" in str(exc):
+                raise HTTPException(404, "No dataset has been imported yet.") from exc
+            raise
         finally:
             cur.close()
     finally:

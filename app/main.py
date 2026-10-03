@@ -2,10 +2,11 @@ from contextlib import asynccontextmanager
 import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from sqlalchemy import inspect
+from fastapi.responses import JSONResponse
+from sqlalchemy import inspect, text
 
 from .db import engine, Base, get_db
 from . import models
@@ -18,6 +19,10 @@ from app.xlsx_import.control import init_control_tables
 from app.init_roles import init_builtin_roles
 from .leads.router import router as lead_router
 from .user_account.router import router as user_account_router
+from .expense_manager.router import router as expense_router
+from .emerrgency.router import is_backend_blocked, router as emergency_router
+
+
 
 
 # ---------------------------------------------------------
@@ -47,7 +52,12 @@ def ensure_admin_profile_columns():
         if missing_columns:
             with engine.begin() as conn:
                 for column_name, column_type in missing_columns:
-                    conn.execute(f"ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "
+                            f"{column_name} {column_type}"
+                        )
+                    )
             logging.getLogger(__name__).info("Added missing admin_users columns: %s", [name for name, _ in missing_columns])
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure admin_users profile columns: %s", exc)
@@ -88,6 +98,11 @@ async def lifespan(app: FastAPI):
     Application startup and shutdown events.
     """
 
+    if is_backend_blocked():
+        logging.getLogger(__name__).warning("Backend is blocked by the emergency lock file")
+        yield
+        return
+
     # Create database tables
     Base.metadata.create_all(bind=engine)
 
@@ -120,6 +135,16 @@ app = FastAPI(
     title="CMS Backend API",
     lifespan=lifespan
 )
+
+
+@app.middleware("http")
+async def reject_requests_when_blocked(request: Request, call_next):
+    if is_backend_blocked():
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Backend is blocked by emergency maintenance."},
+        )
+    return await call_next(request)
 
 
 def custom_openapi():
@@ -185,6 +210,8 @@ app.include_router(
 
 app.include_router(lead_router)
 app.include_router(user_account_router)
+app.include_router(expense_router, prefix="/api")
+app.include_router(emergency_router)
 
 
 # ---------------------------------------------------------
