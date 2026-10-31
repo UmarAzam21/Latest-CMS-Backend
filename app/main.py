@@ -20,7 +20,9 @@ from app.init_roles import init_builtin_roles
 from .leads.router import router as lead_router
 from .user_account.router import router as user_account_router
 from .expense_manager.router import router as expense_router
+from .expense_manager.auth.router import router as expense_auth_router
 from .emerrgency.router import is_backend_blocked, router as emergency_router
+from .agents_system.router import router as agents_router
 
 
 
@@ -210,7 +212,9 @@ app.include_router(
 
 app.include_router(lead_router)
 app.include_router(user_account_router)
+app.include_router(agents_router)
 app.include_router(expense_router, prefix="/api")
+app.include_router(expense_auth_router, prefix="/api")
 app.include_router(emergency_router)
 
 

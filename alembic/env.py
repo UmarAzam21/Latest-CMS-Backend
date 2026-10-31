@@ -135,6 +135,12 @@ def run_migrations_online() -> None:
             connection.commit()
             return
 
+        # The inspection queries above autobegin a transaction; end it so Alembic
+        # opens (and commits) its own. Otherwise the final alembic_version update
+        # is rolled back when the connection closes.
+        if connection.in_transaction():
+            connection.commit()
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

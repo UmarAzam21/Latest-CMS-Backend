@@ -113,6 +113,7 @@ async def get_transactions(
     current_user: User = Depends(get_current_user),
 ):
     entries = db.query(IncomeExpense).filter(
+        IncomeExpense.user_id == current_user.id,
         IncomeExpense.type.in_([ExpenseType.debt, ExpenseType.income, ExpenseType.expense]),
     ).order_by(IncomeExpense.entry_date.desc(), IncomeExpense.id.desc()).all()
     return [_income_expense_response(entry) for entry in entries]
@@ -132,6 +133,7 @@ async def create_expense(
     _get_user_card(account_id, current_user, db)
     category = _require_user_category(db, current_user, category, ExpenseType.expense)
     entry = IncomeExpense(
+        user_id=current_user.id,
         type=ExpenseType.expense,
         subject=subject,
         category=category,
@@ -164,6 +166,7 @@ async def create_income(
     _get_user_card(account_id, current_user, db)
     category = _require_user_category(db, current_user, category, ExpenseType.income)
     entry = IncomeExpense(
+        user_id=current_user.id,
         type=ExpenseType.income,
         subject=subject,
         category=category,
@@ -194,7 +197,10 @@ async def create_card(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if db.query(Card).filter(Card.card_number_last_4 == card_number).first():
+    if db.query(Card).filter(
+        Card.user_id == current_user.id,
+        Card.card_number_last_4 == card_number,
+    ).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A card with this card number already exists.",
@@ -338,7 +344,7 @@ async def delete_expense_category(
 
 
 
-@router.post("card/balance/transfer", response_model=CardBalanceResponse)
+@router.post("/card/balance/transfer", response_model=CardBalanceResponse)
 async def transfer_balance_between_cards(
     source_card_id: int = Form(..., gt=0),
     target_card_id: int = Form(..., gt=0),
@@ -387,6 +393,7 @@ async def create_debt(
 ):
     _get_user_card(account_id, current_user, db)
     entry = IncomeExpense(
+        user_id=current_user.id,
         type=ExpenseType.debt,
         subject=subject,
         category=category.value,

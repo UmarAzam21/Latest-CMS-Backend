@@ -423,3 +423,95 @@ class Debt(BaseModel):
     description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class AgentsLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AgentsRegisterRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=255)
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    role: Literal["admin", "agent"]
+
+
+class AgentsLoginResponse(BaseModel):
+    message: str
+    token: str
+    token_type: str = "bearer"
+    slug: Literal["user", "admin"]
+    redirect_to: str
+    profile: dict[str, Any]
+
+
+class AgentsRegisterResponse(BaseModel):
+    message: str
+    agent_id: int
+    username: str
+    role: Literal["admin", "agent"]
+
+# ---------- Expense Manager Auth ----------
+def _normalize_phone_number(value: str) -> str:
+    phone = "".join(ch for ch in value.strip() if ch not in " -()")
+    digits = phone[1:] if phone.startswith("+") else phone
+    if not digits.isdigit() or not 7 <= len(digits) <= 15:
+        raise ValueError("Enter a valid phone number (7-15 digits, optional leading +).")
+    return phone
+
+
+class ExpenseManagerRegisterRequest(BaseModel):
+    phone_number: str
+    business_name: str = Field(..., min_length=1, max_length=255)
+    email: Optional[EmailStr] = None
+    pin: str = Field(..., pattern=r"^\d{4,6}$")
+
+    @field_validator("phone_number")
+    @classmethod
+    def normalize_phone(cls, v: str) -> str:
+        return _normalize_phone_number(v)
+
+    @field_validator("business_name")
+    @classmethod
+    def strip_business_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Business name cannot be empty.")
+        return v
+
+
+class ExpenseManagerLoginRequest(BaseModel):
+    phone_number: str
+    pin: str = Field(..., pattern=r"^\d{4,6}$")
+
+    @field_validator("phone_number")
+    @classmethod
+    def normalize_phone(cls, v: str) -> str:
+        return _normalize_phone_number(v)
+
+
+class ExpenseManagerChangePinRequest(BaseModel):
+    current_pin: str = Field(..., pattern=r"^\d{4,6}$")
+    new_pin: str = Field(..., pattern=r"^\d{4,6}$")
+
+
+class ExpenseManagerAuthResponse(BaseModel):
+    id: int
+    user_id: int
+    phone_number: str
+    business_name: str
+    email: Optional[EmailStr] = None
+    is_active: bool
+    last_login_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExpenseManagerTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    slug: str = "user"
+    redirect_to: str = "/expense-dashboard"
+    account: ExpenseManagerAuthResponse

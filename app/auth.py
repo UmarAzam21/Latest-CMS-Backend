@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import AdminUser, Role, User
+from .models import AdminUser, AgentLogin, Role, User
 from .enums import ModuleAccess
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this")
@@ -130,11 +130,27 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
 
     user = db.query(AdminUser).filter(AdminUser.email == email).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        agent_id = payload.get("agent_id")
+        agent = db.query(AgentLogin).filter(AgentLogin.id == agent_id).first()
+        if (
+            agent is None
+            or agent.email != email
+            or agent.role != "admin"
+            or not agent.is_active
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return {
+            "id": agent.id,
+            "name": agent.username,
+            "email": agent.email,
+            "role": "admin",
+            "is_superadmin": False,
+            "modules": ["*"],
+        }
 
     role_name = _normalize_role_name(user.role)
     is_superadmin = role_name == "superadmin"

@@ -253,13 +253,15 @@ class Card(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    card_number_last_4 = Column("account_number", String(4), nullable=False, unique=True)
+    card_number_last_4 = Column("account_number", String(4), nullable=False)
     bank_name = Column(String(255), nullable=True)
     balance = Column("account_balance", Numeric(12, 2), nullable=False, default=0)
     created_at = Column(DateTime(timezone=False), default=utcnow)
     expiry_month = Column(Integer, nullable=True)
     expiry_year = Column(Integer, nullable=True)
     card_color = Column(SAEnum(CardColor), nullable=True)
+
+    __table_args__ = (UniqueConstraint("user_id", "account_number", name="uq_expense_account_user_number"),)
 
     @property
     def card_number(self) -> str:
@@ -295,6 +297,7 @@ class IncomeExpense(Base):
     __tablename__ = "income_expense"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     type = Column(SAEnum(ExpenseType, name="income_expense_type_enum"), nullable=False)
     subject = Column(String(255), nullable=False)
     category = Column(String(80), nullable=False, default="Other")
@@ -319,3 +322,36 @@ class Debt(Base):
     card_id = Column(Integer, ForeignKey("expense_accounts.id"), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+
+class AgentLogin(Base):
+    __tablename__ = "agent_register"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(255), nullable=False, unique=True)
+    email = Column(String(320), nullable=False, unique=True)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="agent", server_default="agent")
+    is_active = Column(Boolean, default=True)
+    last_login_at = Column(DateTime(timezone=False), nullable=True)
+
+
+
+class ExpenseManagerAuth(Base):
+    """Phone + PIN login for the expense manager, linked 1:1 to a `User`."""
+    __tablename__ = "expense_manager_auth"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    phone_number = Column(String(20), nullable=False, unique=True)
+    business_name = Column(String(255), nullable=False)
+    email = Column(String(320), nullable=True, unique=True)
+    pin_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime(timezone=False), nullable=True)
+    last_login_at = Column(DateTime(timezone=False), nullable=True)
+    created_at = Column(DateTime(timezone=False), default=utcnow)
+
+    user = relationship("User")
