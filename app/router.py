@@ -1723,13 +1723,13 @@ async def import_xlsx(
     table_name = queue_import([staged_path], [file.filename])
 
     return {
-        "message": "XLSX import started in background",
+        "message": "XLSX import queued for the worker",
         "filename": file.filename,
         "sheet_names": [],
         "headers": [],
         "row_count": 0,
         "rows": [],
-        "status": "processing",
+        "status": "queued",
         "table_name": table_name,
     }
 

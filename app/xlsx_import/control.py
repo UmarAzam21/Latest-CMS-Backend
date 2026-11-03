@@ -17,6 +17,7 @@ def init_control_tables():
                 processed_rows BIGINT DEFAULT 0,
                 source_file TEXT,
                 error_message TEXT,
+                import_payload LONGTEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 activated_at DATETIME
             )
@@ -27,6 +28,10 @@ def init_control_tables():
         if "processed_rows" not in columns:
             conn.execute(
                 text("ALTER TABLE dataset_versions ADD COLUMN processed_rows BIGINT DEFAULT 0")
+            )
+        if "import_payload" not in columns:
+            conn.execute(
+                text("ALTER TABLE dataset_versions ADD COLUMN import_payload LONGTEXT")
             )
 
 
@@ -59,6 +64,22 @@ def update_progress(table_name: str, processed_rows: int):
         cur.execute(
             "UPDATE dataset_versions SET processed_rows = %s, row_count = %s WHERE table_name = %s",
             (processed_rows, processed_rows, table_name),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
+def fail_import(table_name: str, error_message: str):
+    """Records a failed import and removes its staged-file metadata."""
+    conn = engine.raw_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE dataset_versions SET status = %s, error_message = %s, "
+            "import_payload = NULL WHERE table_name = %s",
+            ("failed", error_message, table_name),
         )
         conn.commit()
         cur.close()

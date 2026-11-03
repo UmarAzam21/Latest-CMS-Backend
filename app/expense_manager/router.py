@@ -18,7 +18,7 @@ from ..schema import (
     ExpenseCategoryOptionResponse,
     IncomeExpenseSummaryResponse,
 )
-from ..user_account.dependencies import get_current_user
+from .auth.dependencies import get_current_expense_user
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
@@ -35,13 +35,14 @@ DEFAULT_CATEGORY_COLORS = {
 
 def _get_user_categories(db: Session, current_user: User) -> list[ExpenseCategoryOption]:
     categories = db.query(ExpenseCategoryOption).filter(
-        ExpenseCategoryOption.user_id == current_user.id
+        *_user_scope(ExpenseCategoryOption, current_user)
     ).order_by(ExpenseCategoryOption.id).all()
 
     if not categories:
         db.add_all(
             ExpenseCategoryOption(
                 user_id=current_user.id,
+                business_id=getattr(current_user, "current_business_id", None),
                 name=category.value,
                 color=DEFAULT_CATEGORY_COLORS[category.value].value,
                 is_default=True,
@@ -53,10 +54,20 @@ def _get_user_categories(db: Session, current_user: User) -> list[ExpenseCategor
         except IntegrityError:
             db.rollback()
         categories = db.query(ExpenseCategoryOption).filter(
-            ExpenseCategoryOption.user_id == current_user.id
+            *_user_scope(ExpenseCategoryOption, current_user)
         ).order_by(ExpenseCategoryOption.id).all()
 
     return categories
+
+
+def _user_scope(model, current_user: User):
+    business_id = getattr(current_user, "current_business_id", None)
+    business_filter = (
+        model.business_id == business_id
+        if business_id is not None
+        else model.business_id.is_(None)
+    )
+    return model.user_id == current_user.id, business_filter
 
 
 def _require_user_category(
@@ -67,7 +78,7 @@ def _require_user_category(
 ) -> str:
     normalized_name = name.strip()
     category = db.query(ExpenseCategoryOption).filter(
-        ExpenseCategoryOption.user_id == current_user.id,
+        *_user_scope(ExpenseCategoryOption, current_user),
         ExpenseCategoryOption.name == normalized_name,
         ExpenseCategoryOption.type == category_type,
     ).first()
@@ -85,7 +96,7 @@ def _get_user_card(card_id: Optional[int], current_user: User, db: Session) -> O
 
     card = db.query(Card).filter(
         Card.id == card_id,
-        Card.user_id == current_user.id,
+        *_user_scope(Card, current_user),
     ).first()
     if card is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found.")
@@ -110,10 +121,10 @@ def _income_expense_response(entry: IncomeExpense) -> IncomeExpenseSummaryRespon
 @router.get("/transactions", response_model=list[IncomeExpenseSummaryResponse])
 async def get_transactions(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     entries = db.query(IncomeExpense).filter(
-        IncomeExpense.user_id == current_user.id,
+        *_user_scope(IncomeExpense, current_user),
         IncomeExpense.type.in_([ExpenseType.debt, ExpenseType.income, ExpenseType.expense]),
     ).order_by(IncomeExpense.entry_date.desc(), IncomeExpense.id.desc()).all()
     return [_income_expense_response(entry) for entry in entries]
@@ -128,12 +139,13 @@ async def create_expense(
     account_id: int = Form(..., gt=0),
     description: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     _get_user_card(account_id, current_user, db)
     category = _require_user_category(db, current_user, category, ExpenseType.expense)
     entry = IncomeExpense(
         user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
         type=ExpenseType.expense,
         subject=subject,
         category=category,
@@ -161,12 +173,13 @@ async def create_income(
     account_id: Optional[int] = Form(None, gt=0),
     description: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     _get_user_card(account_id, current_user, db)
     category = _require_user_category(db, current_user, category, ExpenseType.income)
     entry = IncomeExpense(
         user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
         type=ExpenseType.income,
         subject=subject,
         category=category,
@@ -195,10 +208,10 @@ async def create_card(
     expiry_month: Optional[int] = Form(None, ge=1, le=12),
     expiry_year: Optional[int] = Form(None, ge=2000, le=2100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     if db.query(Card).filter(
-        Card.user_id == current_user.id,
+        *_user_scope(Card, current_user),
         Card.card_number_last_4 == card_number,
     ).first():
         raise HTTPException(
@@ -208,6 +221,7 @@ async def create_card(
 
     entry = Card(
         user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
         card_number_last_4=card_number,
         bank_name=bank_name,
         balance=balance,
@@ -231,16 +245,16 @@ async def create_card(
 @router.get("/cards", response_model=list[CardResponse])
 async def get_cards(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
-    return db.query(Card).filter(Card.user_id == current_user.id).all()
+    return db.query(Card).filter(*_user_scope(Card, current_user)).all()
 
 
 @router.get("/cards/{card_id}/balance", response_model=CardBalanceResponse)
 async def get_card_balance(
     card_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     card = _get_user_card(card_id, current_user, db)
     transaction_balance = db.query(
@@ -254,7 +268,10 @@ async def get_card_balance(
             ),
             0,
         )
-    ).filter(IncomeExpense.account_id == card_id).scalar()
+    ).filter(
+        IncomeExpense.account_id == card_id,
+        *_user_scope(IncomeExpense, current_user),
+    ).scalar()
     balance = card.balance + transaction_balance
     return CardBalanceResponse(card_id=card_id, balance=balance)
 
@@ -265,7 +282,7 @@ async def update_card_balance(
     card_id: int,
     new_balance: Decimal = Form(..., gt=0, max_digits=12, decimal_places=2),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     card = _get_user_card(card_id, current_user, db)
     card.balance = new_balance
@@ -281,7 +298,7 @@ async def update_card_balance(
 @router.get("/feed-expense-categories", response_model=ExpenseCategoryFeedResponse)
 async def feed_expense_categories(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     return {
         "categories": _get_user_categories(db, current_user),
@@ -297,15 +314,25 @@ async def feed_expense_categories(
 async def create_expense_category(
     category_data: ExpenseCategoryCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     name = category_data.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Category name cannot be empty.")
 
+    if db.query(ExpenseCategoryOption).filter(
+        *_user_scope(ExpenseCategoryOption, current_user),
+        ExpenseCategoryOption.name == name,
+    ).first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A category with this name already exists.",
+        )
+
     _get_user_categories(db, current_user)
     category = ExpenseCategoryOption(
         user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
         type=category_data.type,
         name=name,
         color=category_data.color.value,
@@ -328,11 +355,11 @@ async def create_expense_category(
 async def delete_expense_category(
     category_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     category = db.query(ExpenseCategoryOption).filter(
         ExpenseCategoryOption.id == category_id,
-        ExpenseCategoryOption.user_id == current_user.id,
+        *_user_scope(ExpenseCategoryOption, current_user),
     ).first()
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found.")
@@ -350,7 +377,7 @@ async def transfer_balance_between_cards(
     target_card_id: int = Form(..., gt=0),
     amount: Decimal = Form(..., gt=0, max_digits=12, decimal_places=2),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     if source_card_id == target_card_id:
         raise HTTPException(
@@ -389,11 +416,12 @@ async def create_debt(
     account_id: Optional[int] = Form(None, gt=0),
     description: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_expense_user),
 ):
     _get_user_card(account_id, current_user, db)
     entry = IncomeExpense(
         user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
         type=ExpenseType.debt,
         subject=subject,
         category=category.value,

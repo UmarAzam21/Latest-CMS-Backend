@@ -253,6 +253,12 @@ class Card(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    business_id = Column(
+        Integer,
+        ForeignKey("expense_manager_businesses.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     card_number_last_4 = Column("account_number", String(4), nullable=False)
     bank_name = Column(String(255), nullable=True)
     balance = Column("account_balance", Numeric(12, 2), nullable=False, default=0)
@@ -261,7 +267,7 @@ class Card(Base):
     expiry_year = Column(Integer, nullable=True)
     card_color = Column(SAEnum(CardColor), nullable=True)
 
-    __table_args__ = (UniqueConstraint("user_id", "account_number", name="uq_expense_account_user_number"),)
+    __table_args__ = (UniqueConstraint("business_id", "account_number", name="uq_expense_account_business_number"),)
 
     @property
     def card_number(self) -> str:
@@ -280,6 +286,7 @@ class ExpenseCategoryOption(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    business_id = Column(Integer, ForeignKey("expense_manager_businesses.id", ondelete="CASCADE"), nullable=True, index=True)
     type = Column(
         SAEnum(ExpenseType, name="expense_type_enum"),
         nullable=False,
@@ -290,7 +297,7 @@ class ExpenseCategoryOption(Base):
     is_default = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=False), default=utcnow)
 
-    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_expense_category_user_name"),)
+    __table_args__ = (UniqueConstraint("business_id", "name", name="uq_expense_category_business_name"),)
 
 
 class IncomeExpense(Base):
@@ -298,6 +305,7 @@ class IncomeExpense(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    business_id = Column(Integer, ForeignKey("expense_manager_businesses.id", ondelete="CASCADE"), nullable=True, index=True)
     type = Column(SAEnum(ExpenseType, name="income_expense_type_enum"), nullable=False)
     subject = Column(String(255), nullable=False)
     category = Column(String(80), nullable=False, default="Other")
@@ -355,3 +363,21 @@ class ExpenseManagerAuth(Base):
     created_at = Column(DateTime(timezone=False), default=utcnow)
 
     user = relationship("User")
+
+
+class ExpenseManagerBusiness(Base):
+    __tablename__ = "expense_manager_businesses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey("expense_manager_auth.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    business_type = Column(
+        String(50),
+        nullable=False,
+        default="personal",
+        server_default="personal",
+    )
+    currency = Column(String(3), nullable=False, default="PKR", server_default="PKR")
+    created_at = Column(DateTime(timezone=False), default=utcnow, server_default=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("account_id", "name", name="uq_expense_business_account_name"),)

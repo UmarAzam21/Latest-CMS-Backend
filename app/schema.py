@@ -464,6 +464,8 @@ def _normalize_phone_number(value: str) -> str:
 class ExpenseManagerRegisterRequest(BaseModel):
     phone_number: str
     business_name: str = Field(..., min_length=1, max_length=255)
+    business_type: str = Field("personal", min_length=1, max_length=50)
+    currency: str = Field("PKR", pattern=r"^[A-Za-z]{3}$")
     email: Optional[EmailStr] = None
     pin: str = Field(..., pattern=r"^\d{4,6}$")
 
@@ -479,6 +481,59 @@ class ExpenseManagerRegisterRequest(BaseModel):
         if not v:
             raise ValueError("Business name cannot be empty.")
         return v
+
+    @field_validator("business_type")
+    @classmethod
+    def normalize_business_type(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if not normalized:
+            raise ValueError("Business type cannot be empty.")
+        return normalized
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, v: str) -> str:
+        return v.upper()
+
+
+class ExpenseManagerBusinessCreateRequest(BaseModel):
+    business_name: str = Field(..., min_length=1, max_length=255)
+    business_type: str = Field("business", min_length=1, max_length=50)
+    currency: str = Field("PKR", pattern=r"^[A-Za-z]{3}$")
+
+    @field_validator("business_name")
+    @classmethod
+    def strip_business_name(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("Business name cannot be empty.")
+        return normalized
+
+    @field_validator("business_type")
+    @classmethod
+    def normalize_business_type(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if not normalized:
+            raise ValueError("Business type cannot be empty.")
+        return normalized
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, v: str) -> str:
+        return v.upper()
+
+
+class ExpenseManagerBusinessResponse(BaseModel):
+    id: int
+    business_name: str
+    business_type: str
+    currency: str
+    created_at: datetime
+
+
+class ExpenseManagerBusinessesResponse(BaseModel):
+    active_business_id: int
+    businesses: list[ExpenseManagerBusinessResponse]
 
 
 class ExpenseManagerLoginRequest(BaseModel):
@@ -515,3 +570,5 @@ class ExpenseManagerTokenResponse(BaseModel):
     slug: str = "user"
     redirect_to: str = "/expense-dashboard"
     account: ExpenseManagerAuthResponse
+    active_business_id: Optional[int] = None
+    businesses: list[ExpenseManagerBusinessResponse] = Field(default_factory=list)

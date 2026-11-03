@@ -7,8 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ...auth import create_access_token, hash_password, verify_password
-from ...models import ExpenseManagerAuth, User
-from ...schema import ExpenseManagerRegisterRequest
+from ...models import ExpenseManagerAuth, ExpenseManagerBusiness, User
+from ...schema import ExpenseManagerBusinessCreateRequest, ExpenseManagerRegisterRequest
 
 MAX_FAILED_PIN_ATTEMPTS = 5
 PIN_LOCKOUT_MINUTES = 15
@@ -59,11 +59,16 @@ def _verify_pin(db: Session, account: ExpenseManagerAuth, pin: str) -> bool:
     return False
 
 
-def create_token_for(account: ExpenseManagerAuth) -> str:
+def create_token_for(account: ExpenseManagerAuth, business_id: int) -> str:
     # `sub` is the linked User id so the existing get_current_user dependency
     # (and every /expenses endpoint) works with this token unchanged.
     return create_access_token(
-        data={"sub": str(account.user_id), "slug": "user", "scope": TOKEN_SCOPE}
+        data={
+            "sub": str(account.user_id),
+            "slug": "user",
+            "scope": TOKEN_SCOPE,
+            "business_id": business_id,
+        }
     )
 
 
@@ -102,6 +107,15 @@ def register_account(db: Session, data: ExpenseManagerRegisterRequest) -> Expens
             pin_hash=hash_password(data.pin),
         )
         db.add(account)
+        db.flush()
+        db.add(
+            ExpenseManagerBusiness(
+                account_id=account.id,
+                name=data.business_name,
+                business_type=data.business_type,
+                currency=data.currency,
+            )
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -111,6 +125,71 @@ def register_account(db: Session, data: ExpenseManagerRegisterRequest) -> Expens
         )
     db.refresh(account)
     return account
+
+
+def ensure_initial_business(db: Session, account: ExpenseManagerAuth) -> ExpenseManagerBusiness:
+    business = db.query(ExpenseManagerBusiness).filter(
+        ExpenseManagerBusiness.account_id == account.id
+    ).order_by(ExpenseManagerBusiness.id).first()
+    if business is None:
+        business = ExpenseManagerBusiness(
+            account_id=account.id,
+            name=account.business_name,
+            business_type="personal",
+            currency="PKR",
+        )
+        db.add(business)
+        db.commit()
+        db.refresh(business)
+    return business
+
+
+def list_businesses(db: Session, account: ExpenseManagerAuth) -> list[ExpenseManagerBusiness]:
+    ensure_initial_business(db, account)
+    return db.query(ExpenseManagerBusiness).filter(
+        ExpenseManagerBusiness.account_id == account.id
+    ).order_by(ExpenseManagerBusiness.id).all()
+
+
+def create_business(
+    db: Session,
+    account: ExpenseManagerAuth,
+    data: ExpenseManagerBusinessCreateRequest,
+) -> ExpenseManagerBusiness:
+    business = ExpenseManagerBusiness(
+        account_id=account.id,
+        name=data.business_name,
+        business_type=data.business_type,
+        currency=data.currency,
+    )
+    db.add(business)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A business with this name already exists in your account.",
+        )
+    db.refresh(business)
+    return business
+
+
+def get_business(
+    db: Session,
+    account: ExpenseManagerAuth,
+    business_id: int,
+) -> ExpenseManagerBusiness:
+    business = db.query(ExpenseManagerBusiness).filter(
+        ExpenseManagerBusiness.id == business_id,
+        ExpenseManagerBusiness.account_id == account.id,
+    ).first()
+    if business is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Business not found.",
+        )
+    return business
 
 
 def authenticate(db: Session, phone_number: str, pin: str) -> ExpenseManagerAuth:

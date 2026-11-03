@@ -20,6 +20,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Iterator, List, Optional
 
@@ -134,7 +135,7 @@ class ImportResult:
 
 
 def new_table_name() -> str:
-    return f"dataset_{int(time.time() * 1000)}"
+    return f"dataset_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
 
 # ---------------------------------------------------------------- reading xlsx
@@ -247,6 +248,7 @@ def _load_via_infile(
     columns: List[str],
     filepaths: List[str],
     progress_cb: Optional[Callable[[int], None]],
+    status_cb: Optional[Callable[[str], None]],
     progress_interval: int,
 ) -> int:
     """Stream rows to a temp CSV, then let MySQL ingest it in one statement."""
@@ -277,6 +279,9 @@ def _load_via_infile(
         logger.info("Staged %d rows (%.1f MB) for LOAD DATA into %s", total_rows, size_mb, table_name)
 
         cols_sql = ", ".join(f"`{c}`" for c in columns)
+        if status_cb:
+            status_cb("loading")
+        logger.info("Loading staged CSV into MySQL for %s", table_name)
         conn = _new_connection(local_infile=True)
         try:
             cur = conn.cursor()
@@ -394,6 +399,8 @@ def _load_via_executemany(
 
     writer = _RetryingWriter(insert_sql)
     total_rows = 0
+    committed_rows = 0
+    next_progress = progress_interval
     batch: List[tuple] = []
     pending = 0
     try:
@@ -405,19 +412,20 @@ def _load_via_executemany(
 
             if batch and (pending + row_bytes > safe_bytes or len(batch) >= max_rows_per_batch):
                 writer.write(batch)
+                committed_rows += len(batch)
                 batch, pending = [], 0
-                if progress_cb and total_rows % progress_interval < len(batch) + 1:
-                    progress_cb(total_rows)
+                if progress_cb and committed_rows >= next_progress:
+                    progress_cb(committed_rows)
+                    while next_progress <= committed_rows:
+                        next_progress += progress_interval
 
             batch.append(row)
             pending += row_bytes
             total_rows += 1
-            if progress_cb and total_rows % progress_interval == 0:
-                progress_cb(total_rows)
 
         writer.write(batch)
         if progress_cb:
-            progress_cb(total_rows)
+            progress_cb(committed_rows + len(batch))
         return total_rows
     finally:
         writer.close()
@@ -433,6 +441,7 @@ def load_rows_into_table(
     batch_size: int = 20000,
     max_batch_bytes: int = 0,          # kept for signature compatibility; unused
     progress_cb: Optional[Callable[[int], None]] = None,
+    status_cb: Optional[Callable[[str], None]] = None,
     progress_interval: int = 50000,
 ) -> int:
     started = time.time()
@@ -444,7 +453,7 @@ def load_rows_into_table(
         if _local_infile_available():
             logger.info("Using LOAD DATA LOCAL INFILE fast path")
             total = _load_via_infile(
-                table_name, columns, filepaths, progress_cb, progress_interval
+                table_name, columns, filepaths, progress_cb, status_cb, progress_interval
             )
         else:
             logger.info("Falling back to byte-capped executemany")
@@ -509,8 +518,8 @@ def activate_dataset(table_name: str):
 
         cur.execute(f"CREATE OR REPLACE VIEW current_dataset AS SELECT * FROM `{table_name}`")
         cur.execute(
-            "UPDATE dataset_versions SET status = 'active', activated_at = now() "
-            "WHERE table_name = %s",
+            "UPDATE dataset_versions SET status = 'active', activated_at = now(), "
+            "import_payload = NULL WHERE table_name = %s",
             (table_name,),
         )
         if previous_table:

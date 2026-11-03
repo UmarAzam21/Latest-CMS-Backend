@@ -1,32 +1,22 @@
 import logging
+import json
 import os
 import shutil
+import tempfile
 import uuid
-import threading
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 
 from app.db import engine  # <-- adjust if your engine var is named differently
-from .control import set_status, update_progress
-from .importer import (
-    ImportResult,
-    ImportValidationError,
-    activate_dataset,
-    build_indexes,
-    create_import_table,
-    load_rows_into_table,
-    new_table_name,
-    read_header,
-    validate_import,
-)
+from .importer import new_table_name
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_DIR = os.environ.get("XLSX_UPLOAD_DIR", "/tmp/xlsx-uploads")
-BATCH_SIZE = int(os.environ.get("XLSX_BATCH_SIZE", "5000"))
-MAX_BATCH_BYTES = int(os.environ.get("XLSX_MAX_BATCH_BYTES", str(8 * 1024 * 1024)))
-PROGRESS_INTERVAL = int(os.environ.get("XLSX_PROGRESS_INTERVAL", "50000"))
+UPLOAD_DIR = os.environ.get(
+    "XLSX_UPLOAD_DIR",
+    os.path.join(tempfile.gettempdir(), "xlsx-uploads"),
+)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 router = APIRouter(prefix="/xlsx", tags=["xlsx-import"])
@@ -36,23 +26,26 @@ def queue_import(staged_paths: List[str], filenames: List[str]) -> str:
     table_name = new_table_name()
 
     conn = engine.raw_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO dataset_versions (table_name, status, row_count, processed_rows, source_file) "
-        "VALUES (%s, 'importing', 0, 0, %s)",
-        (table_name, ", ".join(filenames)),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO dataset_versions "
+            "(table_name, status, row_count, processed_rows, source_file, import_payload) "
+            "VALUES (%s, 'queued', 0, 0, %s, %s)",
+            (table_name, ", ".join(filenames), json.dumps(staged_paths)),
+        )
+        conn.commit()
+        cur.close()
+    except Exception:
+        conn.rollback()
+        for path in staged_paths:
+            if os.path.exists(path):
+                os.remove(path)
+        raise
+    finally:
+        conn.close()
 
-    logger.info("Scheduled import task for %s with %d files", table_name, len(staged_paths))
-    import_thread = threading.Thread(
-        target=_run_import_job,
-        args=(table_name, staged_paths),
-        daemon=False,
-    )
-    import_thread.start()
+    logger.info("Queued import %s with %d files", table_name, len(staged_paths))
     return table_name
 
 
@@ -83,14 +76,13 @@ def queue_import(staged_paths: List[str], filenames: List[str]) -> str:
     }
 )
 async def import_xlsx(
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="One or more .xlsx or .xlsm files to import"),
 ):
     """
     Accepts one or more .xlsx/.xlsm files - useful when a dataset is split
     across files or sheets because Excel caps a single sheet at 1,048,576 rows.
-    All files/sheets load into ONE new table in the background; the request
-    returns immediately with a table_name to poll via GET /xlsx/status/{table_name}.
+    All files/sheets load into ONE new table in the worker; the request returns
+    immediately with a table_name to poll via GET /xlsx/status/{table_name}.
     The dataset only goes live (blue/green swap) once everything has loaded
     and validation passes.
     """
@@ -113,74 +105,16 @@ async def import_xlsx(
     table_name = queue_import(staged_paths, filenames)
 
     return {
-        "status": "processing",
+        "status": "queued",
         "table_name": table_name,
         "files": filenames,
-        "message": "Import started in background. Poll GET /xlsx/status/{table_name} for progress.",
+        "message": "Import queued for the XLSX worker. Poll GET /xlsx/status/{table_name} for progress.",
     }
-
-
-def _run_import_job(table_name: str, staged_paths: List[str]):
-    logger.info("Running import job for %s", table_name)
-    try:
-        logger.info("Starting to read header from %s", staged_paths[0])
-        columns = read_header(staged_paths[0])
-        logger.info("Read %d columns: %s", len(columns), columns)
-        
-        logger.info("Creating table %s", table_name)
-        create_import_table(table_name, columns)
-        logger.info("Table created successfully")
-        update_progress(table_name, 0)
-
-        logger.info("Loading rows from %d files", len(staged_paths))
-        row_count = load_rows_into_table(
-            table_name,
-            columns,
-            staged_paths,
-            batch_size=BATCH_SIZE,
-            max_batch_bytes=MAX_BATCH_BYTES,
-            progress_cb=lambda n: update_progress(table_name, n),
-            progress_interval=PROGRESS_INTERVAL,
-        )
-        logger.info("Loaded %d rows into table", row_count)
-
-        result = ImportResult(table_name=table_name, row_count=row_count, columns=columns)
-        validate_import(result)
-        logger.info("Import validation passed")
-
-        set_status(table_name, "indexing", row_count=row_count)
-        build_indexes(table_name)
-        logger.info("Indexes built successfully")
-
-        activate_dataset(table_name)  # sets status='active' + activated_at itself
-        logger.info("Dataset activated successfully")
-
-    except ImportValidationError as e:
-        logger.exception("Import validation failed for %s", table_name)
-        _fail_and_drop(table_name, str(e))
-    except Exception as e:
-        logger.exception("Unexpected import failure for %s: %s", table_name, str(e))
-        _fail_and_drop(table_name, str(e))
-    finally:
-        for p in staged_paths:
-            if os.path.exists(p):
-                os.remove(p)
-        logger.info("Import job finished for %s", table_name)
-
-
-def _fail_and_drop(table_name: str, error_message: str):
-    set_status(table_name, "failed", error_message=error_message)
-    conn = engine.raw_connection()
-    cur = conn.cursor()
-    cur.execute(f'DROP TABLE IF EXISTS `{table_name}`')
-    conn.commit()
-    cur.close()
-    conn.close()
 
 
 @router.get("/status/{table_name}")
 def get_status(table_name: str):
-    """Poll this while an import runs. status moves: importing -> indexing -> active (or failed)."""
+    """Poll this while queued/running. Status moves queued -> importing -> loading -> indexing -> active (or failed)."""
     conn = engine.raw_connection()
     cur = conn.cursor()
     cur.execute(
