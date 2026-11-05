@@ -25,3 +25,10 @@ new `access_token`, `active_business_id`, and the account's `businesses` list.
 Use the returned token after creating or switching businesses. The token scopes
 all `/api/expenses` data operations to that business. A business ID owned by a
 different login cannot be selected.
+
+# Expense manager notifications
+
+Inbox, device registration, preferences and the live WebSocket are under
+`/api/expenses/notifications`. See
+[the notification README](app/expense_manager/notification/README.md) for the
+endpoints, push payload and client integration steps.

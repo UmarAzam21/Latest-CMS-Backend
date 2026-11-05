@@ -39,3 +39,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 alembic.zip
+
+# Firebase service account keys
+*firebase-adminsdk*.json
+firebase-credentials.json

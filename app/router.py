@@ -492,7 +492,7 @@ async def websocket_notifications(websocket: WebSocket, user_id: str):
 
 # ---------- Bootstrap Superadmin ----------
 @router.get("/api/admin/diagnosis")
-def diagnose_admin_users(db: Session = Depends(get_db)):
+def diagnose_admin_users(db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Diagnostic endpoint to check admin users in database. Useful for debugging."""
     all_users = db.query(AdminUser).all()
     superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first()
@@ -514,7 +514,7 @@ def diagnose_admin_users(db: Session = Depends(get_db)):
 
 
 @router.delete("/api/admin/reset-all-users")
-def reset_all_admin_users(db: Session = Depends(get_db)):
+def reset_all_admin_users(db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """DANGEROUS: Delete all admin users to reset the system. 
     Use this ONLY if you're locked out and need to start fresh."""
     count = db.query(AdminUser).delete()
