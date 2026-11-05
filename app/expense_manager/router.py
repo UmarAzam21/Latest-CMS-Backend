@@ -19,6 +19,9 @@ from ..schema import (
     IncomeExpenseSummaryResponse,
 )
 from .auth.dependencies import get_current_expense_user
+from .notification.config import settings as notification_settings
+from .notification.events import NotificationType
+from .notification.service import publish
 
 router = APIRouter(prefix="/expenses", tags=["Expenses"])
 
@@ -103,6 +106,60 @@ def _get_user_card(card_id: Optional[int], current_user: User, db: Session) -> O
     return card
 
 
+def _card_balance(db: Session, card: Card, current_user: User) -> Decimal:
+    transaction_balance = db.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (IncomeExpense.type == ExpenseType.income, IncomeExpense.amount),
+                    (IncomeExpense.type == ExpenseType.expense, -IncomeExpense.amount),
+                    else_=0,
+                )
+            ),
+            0,
+        )
+    ).filter(
+        IncomeExpense.account_id == card.id,
+        *_user_scope(IncomeExpense, current_user),
+    ).scalar()
+    return card.balance + transaction_balance
+
+
+def _notify(
+    db: Session,
+    current_user: User,
+    notification_type: NotificationType,
+    **context,
+) -> None:
+    publish(
+        db,
+        user_id=current_user.id,
+        business_id=getattr(current_user, "current_business_id", None),
+        notification_type=notification_type,
+        context=context,
+    )
+
+
+def _notify_if_low_balance(
+    db: Session,
+    current_user: User,
+    card: Card,
+    balance_before: Decimal,
+    balance_after: Decimal,
+) -> None:
+    # Only on crossing the threshold, so a card that stays low doesn't alert on every expense.
+    threshold = notification_settings.low_balance_threshold
+    if balance_after <= threshold < balance_before:
+        _notify(
+            db,
+            current_user,
+            NotificationType.low_balance,
+            card_id=card.id,
+            last_4=card.card_number_last_4,
+            balance=balance_after,
+        )
+
+
 def _income_expense_response(entry: IncomeExpense) -> IncomeExpenseSummaryResponse:
     return IncomeExpenseSummaryResponse(
         id=entry.id,
@@ -141,8 +198,9 @@ async def create_expense(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_expense_user),
 ):
-    _get_user_card(account_id, current_user, db)
+    card = _get_user_card(account_id, current_user, db)
     category = _require_user_category(db, current_user, category, ExpenseType.expense)
+    balance_before = _card_balance(db, card, current_user)
     entry = IncomeExpense(
         user_id=current_user.id,
         business_id=getattr(current_user, "current_business_id", None),
@@ -156,6 +214,16 @@ async def create_expense(
     )
     db.add(entry)
     try:
+        db.flush()
+        _notify(
+            db,
+            current_user,
+            NotificationType.expense_created,
+            entry_id=entry.id,
+            subject=subject,
+            amount=amount,
+        )
+        _notify_if_low_balance(db, current_user, card, balance_before, balance_before - amount)
         db.commit()
     except Exception:
         db.rollback()
@@ -191,6 +259,15 @@ async def create_income(
     )
     db.add(entry)
     try:
+        db.flush()
+        _notify(
+            db,
+            current_user,
+            NotificationType.income_created,
+            entry_id=entry.id,
+            subject=subject,
+            amount=amount,
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -231,6 +308,14 @@ async def create_card(
     )
     db.add(entry)
     try:
+        db.flush()
+        _notify(
+            db,
+            current_user,
+            NotificationType.card_added,
+            card_id=entry.id,
+            last_4=card_number,
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -257,23 +342,7 @@ async def get_card_balance(
     current_user: User = Depends(get_current_expense_user),
 ):
     card = _get_user_card(card_id, current_user, db)
-    transaction_balance = db.query(
-        func.coalesce(
-            func.sum(
-                case(
-                    (IncomeExpense.type == ExpenseType.income, IncomeExpense.amount),
-                    (IncomeExpense.type == ExpenseType.expense, -IncomeExpense.amount),
-                    else_=0,
-                )
-            ),
-            0,
-        )
-    ).filter(
-        IncomeExpense.account_id == card_id,
-        *_user_scope(IncomeExpense, current_user),
-    ).scalar()
-    balance = card.balance + transaction_balance
-    return CardBalanceResponse(card_id=card_id, balance=balance)
+    return CardBalanceResponse(card_id=card_id, balance=_card_balance(db, card, current_user))
 
 
 
@@ -394,10 +463,23 @@ async def transfer_balance_between_cards(
             detail="Insufficient balance in the source card.",
         )
 
+    balance_before = _card_balance(db, source_card, current_user)
     source_card.balance -= amount
     target_card.balance += amount
 
     try:
+        db.flush()
+        _notify(
+            db,
+            current_user,
+            NotificationType.transfer_completed,
+            amount=amount,
+            source_last_4=source_card.card_number_last_4,
+            target_last_4=target_card.card_number_last_4,
+        )
+        _notify_if_low_balance(
+            db, current_user, source_card, balance_before, balance_before - amount
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -432,6 +514,15 @@ async def create_debt(
     )
     db.add(entry)
     try:
+        db.flush()
+        _notify(
+            db,
+            current_user,
+            NotificationType.debt_created,
+            entry_id=entry.id,
+            subject=subject,
+            amount=amount,
+        )
         db.commit()
     except Exception:
         db.rollback()

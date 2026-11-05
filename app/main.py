@@ -21,6 +21,9 @@ from .leads.router import router as lead_router
 from .user_account.router import router as user_account_router
 from .expense_manager.router import router as expense_router
 from .expense_manager.auth.router import router as expense_auth_router
+from .expense_manager.notification.channels.websockets import ws_manager
+from .expense_manager.notification.router import router as expense_notification_router
+from .expense_manager.notification.worker.scheduler import start_inline_dispatcher
 from .emerrgency.router import is_backend_blocked, router as emergency_router
 from .agents_system.router import router as agents_router
 
@@ -73,9 +76,15 @@ def ensure_default_superadmin():
 
         has_superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first() is not None
         if not has_superadmin:
-            email = os.getenv("DEFAULT_SUPERADMIN_EMAIL", "admin@example.com")
-            password = os.getenv("DEFAULT_SUPERADMIN_PASSWORD", "admin123")
+            email = os.getenv("DEFAULT_SUPERADMIN_EMAIL")
+            password = os.getenv("DEFAULT_SUPERADMIN_PASSWORD")
             name = os.getenv("DEFAULT_SUPERADMIN_NAME", "System Admin")
+            if not email or not password:
+                logging.getLogger(__name__).warning(
+                    "No superadmin exists. Set DEFAULT_SUPERADMIN_EMAIL and "
+                    "DEFAULT_SUPERADMIN_PASSWORD to create one."
+                )
+                return
 
             admin = AdminUser(
                 name=name,
@@ -124,9 +133,14 @@ async def lifespan(app: FastAPI):
     # Initialize XLSX import control tables
     init_control_tables()
 
+    await ws_manager.start()
+    inline_dispatcher = start_inline_dispatcher()
+
     yield
 
-    # Shutdown logic can be added here if required
+    if inline_dispatcher is not None:
+        inline_dispatcher.cancel()
+    await ws_manager.stop()
 
 
 # ---------------------------------------------------------
@@ -215,6 +229,7 @@ app.include_router(user_account_router)
 app.include_router(agents_router)
 app.include_router(expense_router, prefix="/api")
 app.include_router(expense_auth_router, prefix="/api")
+app.include_router(expense_notification_router, prefix="/api")
 app.include_router(emergency_router)
 
 

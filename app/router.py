@@ -438,7 +438,7 @@ async def notify_admin_event(current_admin: Optional[dict], db: Session, resourc
 
 
 @router.get("/api/notifications", response_model=NotificationListResponse)
-def list_notifications(user_id: str = Query(...), unread_only: bool = Query(False), resource_type: Optional[str] = Query(None), page: int = Query(1), page_size: int = Query(25), db: Session = Depends(get_db)):
+def list_notifications(user_id: str = Query(...), unread_only: bool = Query(False), resource_type: Optional[str] = Query(None), page: int = Query(1), page_size: int = Query(25), db: Session = Depends(get_db), _current_admin: dict = Depends(get_current_admin)):
     q = db.query(Notification).filter(Notification.user_id == user_id)
     if unread_only:
         q = q.filter(Notification.is_read == False)
@@ -452,13 +452,13 @@ def list_notifications(user_id: str = Query(...), unread_only: bool = Query(Fals
 
 
 @router.get("/api/notifications/unread-count", response_model=UnreadCountResponse)
-def notifications_unread_count(user_id: str = Query(...), db: Session = Depends(get_db)):
+def notifications_unread_count(user_id: str = Query(...), db: Session = Depends(get_db), _current_admin: dict = Depends(get_current_admin)):
     count = db.query(func.count()).select_from(Notification).filter(Notification.user_id == user_id, Notification.is_read == False).scalar() or 0
     return UnreadCountResponse(unread_count=count)
 
 
 @router.patch("/api/notifications/read")
-def notifications_mark_read(request: MarkReadRequest, user_id: str = Query(...), db: Session = Depends(get_db)):
+def notifications_mark_read(request: MarkReadRequest, user_id: str = Query(...), db: Session = Depends(get_db), _current_admin: dict = Depends(get_current_admin)):
     now = datetime.utcnow()
     q = db.query(Notification).filter(Notification.user_id == user_id, Notification.is_read == False)
     if request.ids:
@@ -469,7 +469,7 @@ def notifications_mark_read(request: MarkReadRequest, user_id: str = Query(...),
 
 
 @router.delete("/api/notifications/{notification_id}")
-def notifications_delete(notification_id: str, user_id: str = Query(...), db: Session = Depends(get_db)):
+def notifications_delete(notification_id: str, user_id: str = Query(...), db: Session = Depends(get_db), _current_admin: dict = Depends(get_current_admin)):
     obj = db.query(Notification).filter(Notification.user_id == user_id, Notification.id == notification_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -492,7 +492,7 @@ async def websocket_notifications(websocket: WebSocket, user_id: str):
 
 # ---------- Bootstrap Superadmin ----------
 @router.get("/api/admin/diagnosis")
-def diagnose_admin_users(db: Session = Depends(get_db)):
+def diagnose_admin_users(db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """Diagnostic endpoint to check admin users in database. Useful for debugging."""
     all_users = db.query(AdminUser).all()
     superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first()
@@ -514,7 +514,7 @@ def diagnose_admin_users(db: Session = Depends(get_db)):
 
 
 @router.delete("/api/admin/reset-all-users")
-def reset_all_admin_users(db: Session = Depends(get_db)):
+def reset_all_admin_users(db: Session = Depends(get_db), current_admin: dict = Depends(require_super_admin)):
     """DANGEROUS: Delete all admin users to reset the system. 
     Use this ONLY if you're locked out and need to start fresh."""
     count = db.query(AdminUser).delete()

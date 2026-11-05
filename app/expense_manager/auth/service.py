@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from ...auth import create_access_token, hash_password, verify_password
 from ...models import ExpenseManagerAuth, ExpenseManagerBusiness, User
 from ...schema import ExpenseManagerBusinessCreateRequest, ExpenseManagerRegisterRequest
+from ..notification.events import NotificationType
+from ..notification.service import publish
 
 MAX_FAILED_PIN_ATTEMPTS = 5
 PIN_LOCKOUT_MINUTES = 15
@@ -45,6 +47,12 @@ def _record_failed_attempt(db: Session, account: ExpenseManagerAuth) -> None:
     if account.failed_attempts >= MAX_FAILED_PIN_ATTEMPTS:
         account.locked_until = _now() + timedelta(minutes=PIN_LOCKOUT_MINUTES)
         account.failed_attempts = 0
+        publish(
+            db,
+            user_id=account.user_id,
+            notification_type=NotificationType.account_locked,
+            context={"minutes": PIN_LOCKOUT_MINUTES},
+        )
     db.commit()
 
 
@@ -228,4 +236,5 @@ def change_pin(db: Session, account: ExpenseManagerAuth, current_pin: str, new_p
         )
 
     account.pin_hash = hash_password(new_pin)
+    publish(db, user_id=account.user_id, notification_type=NotificationType.pin_changed)
     db.commit()

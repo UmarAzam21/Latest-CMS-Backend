@@ -252,7 +252,7 @@ class Card(Base):
     __tablename__ = "expense_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     business_id = Column(
         Integer,
         ForeignKey("expense_manager_businesses.id", ondelete="CASCADE"),
@@ -285,7 +285,7 @@ class ExpenseCategoryOption(Base):
     __tablename__ = "expense_category_options"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     business_id = Column(Integer, ForeignKey("expense_manager_businesses.id", ondelete="CASCADE"), nullable=True, index=True)
     type = Column(
         SAEnum(ExpenseType, name="expense_type_enum"),
@@ -381,3 +381,7 @@ class ExpenseManagerBusiness(Base):
     created_at = Column(DateTime(timezone=False), default=utcnow, server_default=func.now(), nullable=False)
 
     __table_args__ = (UniqueConstraint("account_id", "name", name="uq_expense_business_account_name"),)
+
+
+# Registers the notification tables on Base.metadata for create_all and Alembic.
+from .expense_manager.notification import model as _expense_notification_model  # noqa: E402,F401

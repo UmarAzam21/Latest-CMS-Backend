@@ -6,8 +6,9 @@ import tempfile
 import uuid
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
 
+from app.auth import get_current_admin
 from app.db import engine  # <-- adjust if your engine var is named differently
 from .importer import new_table_name
 
@@ -77,6 +78,7 @@ def queue_import(staged_paths: List[str], filenames: List[str]) -> str:
 )
 async def import_xlsx(
     files: List[UploadFile] = File(..., description="One or more .xlsx or .xlsm files to import"),
+    _current_admin: dict = Depends(get_current_admin),
 ):
     """
     Accepts one or more .xlsx/.xlsm files - useful when a dataset is split
@@ -96,7 +98,9 @@ async def import_xlsx(
             raise HTTPException(400, "One of the uploaded files has no filename.")
         if not f.filename.lower().endswith((".xlsx", ".xlsm")):
             raise HTTPException(400, f"{f.filename}: only .xlsx/.xlsm files are supported.")
-        staged_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}_{f.filename}")
+        # Only the base name: a crafted filename could otherwise escape UPLOAD_DIR.
+        safe_name = os.path.basename(f.filename.replace("\\", "/"))
+        staged_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}_{safe_name}")
         with open(staged_path, "wb") as out:
             shutil.copyfileobj(f.file, out)
         staged_paths.append(staged_path)
@@ -113,7 +117,7 @@ async def import_xlsx(
 
 
 @router.get("/status/{table_name}")
-def get_status(table_name: str):
+def get_status(table_name: str, _current_admin: dict = Depends(get_current_admin)):
     """Poll this while queued/running. Status moves queued -> importing -> loading -> indexing -> active (or failed)."""
     conn = engine.raw_connection()
     cur = conn.cursor()
@@ -132,7 +136,7 @@ def get_status(table_name: str):
 
 
 @router.get("/datasets")
-def list_datasets():
+def list_datasets(_current_admin: dict = Depends(get_current_admin)):
     conn = engine.raw_connection()
     cur = conn.cursor()
     cur.execute(
