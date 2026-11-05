@@ -40,6 +40,22 @@ htmlcov/
 Thumbs.db
 alembic.zip
 
-# Firebase service account keys
+# Firebase and Google service account keys
 *firebase-adminsdk*.json
-firebase-credentials.json
+firebase-credentials*.json
+*service-account*.json
+*service_account*.json
+serviceAccountKey*.json
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Other secrets
+secrets/
+.secrets
+*.secret

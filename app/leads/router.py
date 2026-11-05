@@ -10,6 +10,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 
+from ..auth import get_current_admin
 from ..db import get_db
 from ..models import Lead, AdminUser
 from ..schema import LeadStep1Create, LeadStep2Update, LeadsResponse, LeadExportRequest
@@ -114,6 +115,7 @@ async def update_lead(
     lead_id: int,
     lead_update: LeadsResponse,
     db: Session = Depends(get_db),
+    _current_admin: dict = Depends(get_current_admin),
 ):
     """Full overwrite — used by any admin screen that edits a lead's every field at once."""
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
@@ -155,6 +157,7 @@ async def get_leads(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 50,
+    _current_admin: dict = Depends(get_current_admin),
 ):
     leads = (
         db.query(Lead)
@@ -285,7 +288,7 @@ def build_pdf(leads: list[Lead], fields: list[str]) -> io.BytesIO:
 async def download_leads(
     payload: LeadExportRequest,
     db: Session = Depends(get_db),
-    # admin: AdminUser = Depends(get_current_admin_user),
+    _current_admin: dict = Depends(get_current_admin),
 ):
     leads = get_leads_for_export(db, payload)
     fields = resolve_fields(payload.fields)

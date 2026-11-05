@@ -12,7 +12,16 @@ from .db import get_db
 from .models import AdminUser, AgentLogin, Role, User
 from .enums import ModuleAccess
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-this")
+
+def _require_secret_key() -> str:
+    # Refuse to start rather than sign tokens with a value anyone could read.
+    secret_key = os.getenv("JWT_SECRET_KEY")
+    if not secret_key or secret_key == "your-secret-key-change-this":
+        raise RuntimeError("JWT_SECRET_KEY must be set to a long random value.")
+    return secret_key
+
+
+SECRET_KEY = _require_secret_key()
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 din
 

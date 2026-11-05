@@ -76,9 +76,15 @@ def ensure_default_superadmin():
 
         has_superadmin = db.query(AdminUser).filter(AdminUser.role == "superadmin").first() is not None
         if not has_superadmin:
-            email = os.getenv("DEFAULT_SUPERADMIN_EMAIL", "admin@example.com")
-            password = os.getenv("DEFAULT_SUPERADMIN_PASSWORD", "admin123")
+            email = os.getenv("DEFAULT_SUPERADMIN_EMAIL")
+            password = os.getenv("DEFAULT_SUPERADMIN_PASSWORD")
             name = os.getenv("DEFAULT_SUPERADMIN_NAME", "System Admin")
+            if not email or not password:
+                logging.getLogger(__name__).warning(
+                    "No superadmin exists. Set DEFAULT_SUPERADMIN_EMAIL and "
+                    "DEFAULT_SUPERADMIN_PASSWORD to create one."
+                )
+                return
 
             admin = AdminUser(
                 name=name,
